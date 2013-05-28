@@ -40,6 +40,11 @@ Usage       : seewaves [ server port ]
 #include <time.h>
 #include <math.h>
 #include <GL/glfw.h>
+#ifdef __APPLE__
+#include <GLUT/glut.h>
+#else
+#include <GL/glut.h>
+#endif
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/types.h>
@@ -72,7 +77,7 @@ typedef struct _seewaves_t {
     /* mutex lock for sharing data safely */
     pthread_mutex_t lock;
     /* total number of particles in current simulation */
-    uint total_particle_count;
+    unsigned int total_particle_count;
     /* array of x position of all particles, total_particle_cnt long */
     float *x;
     /* array of y position of all particles, total_particle_cnt long */
@@ -121,6 +126,10 @@ typedef struct _seewaves_t {
     int display_mode;
     /* background clear color */
     GLfloat background_color[4];
+    /* viewport dimensions */
+    GLint viewport[4];
+    /* most recent timestamp */
+    float most_recent_timestamp;
 } seewaves_t;
 
 /* Local prototypes */
@@ -132,6 +141,9 @@ void initialize_gl(seewaves_t *s);
 void display(void);
 void GLFWCALL on_key(int key, int action);
 void GLFWCALL on_resize(int w, int h);
+void view_ortho(int x, int y);
+void display_status(char *s);
+void view_perspective(void);
 
 /* Global application data variable */
 seewaves_t g_seewaves;
@@ -229,7 +241,7 @@ void *heartbeat_thread_main(void *user_data) {
             ipver = "IPv6";
         }
         inet_ntop(address_p->ai_family, addr, ipstr, sizeof(ipstr));
-        printf("Using  %s: %s\n", ipver, ipstr);
+        printf("Heartbeat using  %s: %s\n", ipver, ipstr);
     }
 
     /* free linked-list returned from resolver */
@@ -293,11 +305,8 @@ void *heartbeat_thread_main(void *user_data) {
         }
         /* has main thread closed our socket? */
         err = recvfrom(sw->heartbeat_socket_fd, &b, sizeof(b), 0, NULL, NULL);
-        if (err == -1) {
-            if (errno == EBADF) {
-                /* yes, time to exit */
-                done = 1;
-            }
+        if (err <= 0) {
+            done = 1;
         }
         /* give cpu a break */
         usleep(10);
@@ -333,7 +342,7 @@ void *data_thread_main(void *user_data) {
     struct addrinfo *res, *p;
 
     /* exponent */
-    int exp = 1;
+    double exp = 1;
 
     /* loop exit variable */
     int done = 0;
@@ -372,7 +381,7 @@ void *data_thread_main(void *user_data) {
         }
     }
 
-    printf("IP string for server: %s\n", ipstr);
+    printf("Receive channel: %s\n", ipstr);
 
     /* create server socket */
     if ((sw->data_socket_fd = socket(res->ai_family, res->ai_socktype,
@@ -408,14 +417,17 @@ void *data_thread_main(void *user_data) {
 
     /* Set maximum UDP receiver buffer size.  Strategy is to increase until
     it fails, then fall back to last one that worked (must be a better way!) */
+#define SET_RECV_BUF
+#ifdef SET_RECV_BUF
     for(;; exp++) {
         /* compute a value */
-        int a = sizeof(ptp_packet_t) * pow(2, exp);
+        int a;
+        a = sizeof(ptp_packet_t) * (int)pow(2.0, exp);
 
-        /* try to set to that value */
-        if (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &a,
-                       sizeof(int)) == -1) {
-
+        /* try to set to that value (up to 1024 times packet size) */
+        if ((a > (1024 * (int)sizeof(ptp_packet_t))) ||
+            (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &a,
+            (socklen_t)(sizeof(int))) == -1)) {
             /* Intentional failure, set it to highest successful value */
             a = sizeof(ptp_packet_t) * pow(2, (exp - 1));
             if (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &a,
@@ -427,6 +439,7 @@ void *data_thread_main(void *user_data) {
             break;
         }
     }
+#endif
     /* get actual UDP receive buffer size in use */
     if (getsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &sw->udp_buf_size,
                   (socklen_t*)&err) == -1) {
@@ -447,38 +460,42 @@ void *data_thread_main(void *user_data) {
         /* receive a packet */
         memset((char *) &data_socket_remote_address, 0,
                sizeof(data_socket_remote_address));
+        /*printf("waiting...\n");fflush(stdout);*/
         packet_length_bytes = recvfrom(sw->data_socket_fd, &packet,
                                        sizeof(ptp_packet_t),
                                        0, (struct sockaddr *)
                                        &data_socket_remote_address,
                                        &data_socket_remote_address_len);
+        /*printf("done waiting with %ld...\n", packet_length_bytes);fflush(stdout);*/
 
         /* did we receive a packet? */
-        if (packet_length_bytes != -1) {
+        if (packet_length_bytes == sizeof(ptp_packet_t)) {
             /* yes, get mutex lock */
             int locked = 0;
             while(!locked) {
                 if (pthread_mutex_trylock(&sw->lock)) {
                     /* got the lock */
-                    uint particle = 0;
+                    unsigned int particle = 0;
 
                     /* exit loop flag */
                     locked++;
 
+                    /* keep most recent timestamp */
+                    sw->most_recent_timestamp = packet.t >
+                        sw->most_recent_timestamp ? packet.t :
+                        sw->most_recent_timestamp;
+
                     /* keep track of packet count received */
                     sw->packets_received++;
-                    printf("%i packets received\n", sw->packets_received);
                     /* allocate memory if first time or new particle count */
                     if (sw->total_particle_count !=
                         packet.total_particle_count) {
                         if (sw->x != NULL) {
                             /* not first time, but different count, so free */
-                            printf("FREEING\n");fflush(stdout);
                             free(sw->x);
                             free(sw->y);
                             free(sw->z);
                         }
-                        printf("ALLOCATING\n");fflush(stdout);
                         sw->x = (float*)calloc(packet.total_particle_count,
                             sizeof(float));
                         sw->y = (float*)calloc(packet.total_particle_count,
@@ -493,7 +510,7 @@ void *data_thread_main(void *user_data) {
                     /* loop through particles in this packet */
                     for(; particle < packet.particle_count; particle++) {
                         /* get particle id */
-                        uint id = packet.data[particle].id;
+                        unsigned int id = packet.data[particle].id;
 
                         /* set x, y, z and w */
                         sw->x[id] = packet.data[particle].position[0];
@@ -508,13 +525,19 @@ void *data_thread_main(void *user_data) {
                     }
                 }
             }
+        } else if (packet_length_bytes == 0) {
+            /* socket closed on linux */
+            break;
         } else {
-            if (errno == EBADF) {
+            if(errno == EINTR) {
+                /* ignore */
+            } else if (errno == EBADF) {
                 /* Parent thread closed the socket, that's our signal that
                 we're done */
                 done = 1;
             } else {
-                /*perror("recvfrom");*/
+                perror("recvfrom");
+                break;
             }
         }
     }
@@ -574,7 +597,7 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     /* default local host, port */
     strcpy(s->local_server_host, PTP_DEFAULT_CLIENT_HOST);
     s->local_server_port = PTP_DEFAULT_CLIENT_PORT;
-strcpy(s->local_server_host, "172.25.104.7");
+strcpy(s->local_server_host, "172.25.101.2");
 
     /* default remote host, port */
     strcpy(s->remote_server_host, PTP_DEFAULT_SERVER_HOST);
@@ -663,6 +686,37 @@ void initialize_gl(seewaves_t *s) {
     glShadeModel(GL_SMOOTH);
 }
 
+void view_perspective(void) {
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+}
+
+/* heads up display */
+void view_ortho(int x, int y) {
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, x , 0, y , -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+}
+
+void display_status(char *s) {
+    int len, i;
+    view_ortho(g_seewaves.viewport[2], g_seewaves.viewport[3]); 
+    /*float3 tank_size = problem->m_size;*/
+    glRasterPos2i(10, 10);
+    /*glRasterPos3f(tank_size.x, tank_size.y, 0.0);*/
+    len = (int) strlen(s);
+    for (i = 0; i < len; i++) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, s[i]);
+    }
+    view_perspective();
+}
+
 /*
 Called at the start of the program, after a glutPostRedisplay() and during idle
 to display a frame
@@ -671,7 +725,10 @@ void display(void) {
     /* return value */
     int err;
     /* loop iterator */
-    uint i;
+    unsigned int i;
+
+    /* status message buffer */
+    char status_msg[1024];
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glLoadIdentity();
@@ -713,6 +770,13 @@ void display(void) {
         fprintf(stderr, "Error unlocking mutex: %i\n", err);
     }
     glEnd();
+
+    /* display status */
+    sprintf(status_msg, "%i packets, %i particles, t=%.3fs",
+        g_seewaves.packets_received, 
+        g_seewaves.total_particle_count,
+        g_seewaves.most_recent_timestamp);
+    display_status(status_msg);
 }
 
 void GLFWCALL on_key(int key, int action) {
@@ -730,6 +794,11 @@ void GLFWCALL on_key(int key, int action) {
 
 void on_resize(int w, int h) {
     glViewport(0, 0, w, h);
+    g_seewaves.viewport[0] = 0;
+    g_seewaves.viewport[1] = 0;
+    g_seewaves.viewport[2] = w;
+    g_seewaves.viewport[3] = h;
+
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluPerspective(100.0, (GLfloat)w / (GLfloat)h, 0.1, 100.0);
@@ -741,6 +810,9 @@ int main(int argc, char **argv) {
     /* return value */
     int err;
 
+    /* we use glut just fonts right now */
+    glutInit(&argc, argv);
+
     /* initialize the application */
     if ((err = initialize_application(&g_seewaves, argc, argv))) {
         exit(err);
@@ -750,6 +822,11 @@ int main(int argc, char **argv) {
     if (!glfwInit()) {
         exit(-1);
     }
+
+    g_seewaves.viewport[0] = 0;
+    g_seewaves.viewport[1] = 0;
+    g_seewaves.viewport[2] = g_seewaves.win_width;
+    g_seewaves.viewport[3] = g_seewaves.win_height;
 
     /* open the GL window */
     if (!glfwOpenWindow(g_seewaves.win_width,
@@ -792,8 +869,8 @@ int main(int argc, char **argv) {
     }
 
     /* close the underlying sockets, results in threads exiting gracefully */
-    close(g_seewaves.data_socket_fd);
-    close(g_seewaves.heartbeat_socket_fd);
+    shutdown(g_seewaves.data_socket_fd, SHUT_RDWR);
+    shutdown(g_seewaves.heartbeat_socket_fd, SHUT_RDWR);
 
     /* wait for threads to finish */
     if ((err = pthread_join(g_seewaves.data_thread, NULL))) {
