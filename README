@@ -1,0 +1,9 @@
+Seewaves 0.1 (pre-alpha)
+<kgamiel@renci.org>
+
+Requires glfw library.
+
+To build, cd to src/ and type make.  
+
+Executable will be src/seewaves, run with --help for usage.
+

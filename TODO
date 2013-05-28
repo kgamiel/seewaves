@@ -1,0 +1,3 @@
+- look at naming for local v. remote host names, ports
+- use float[4] instead of separate x, y, z and w(?)
+
