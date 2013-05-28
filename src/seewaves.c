@@ -554,8 +554,8 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
         {"help", no_argument, 0,  'x' },
         {"host", required_argument, 0,  'h' },
         {"port", required_argument, 0,  'p' },
-        {"local_host", required_argument, 0,  't' },
-        {"local_port", required_argument, 0,  'l' },
+        {"in_host", required_argument, 0,  't' },
+        {"in_port", required_argument, 0,  'l' },
         { 0, 0, 0, 0}
     };
 
