@@ -11,13 +11,11 @@ ifeq ($(platform), Linux)
 	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
 	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) -O3 \
     -D_POSIX_C_SOURCE=200112L -D_BSD_SOURCE
-	#CFLAGS=-g -Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
-	#-Wstrict-prototypes -Wold-style-definition -I$(IDIR)
 	LIBS=-lglfw -lGL -lGLU -lm -lpthread -lglut
 else ifeq ($(platform), Darwin)
 	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
 	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) -O3
-	LIBS=-lglfw -framework OpenGL
+	LIBS=-lglfw -framework OpenGL -framework GLUT
 endif
 
 

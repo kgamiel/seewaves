@@ -101,13 +101,13 @@ typedef struct _seewaves_t {
     /* window height */
     int win_height;
     /* local server IP to which to bind */
-    char local_server_host[INET6_ADDRSTRLEN];
+    char data_host[INET6_ADDRSTRLEN];
     /* local server port number to which to bind */
-    uint16_t local_server_port;
+    uint16_t data_port;
     /* remote server host name or IP */
-    char remote_server_host[INET6_ADDRSTRLEN];
+    char gpusph_host[INET6_ADDRSTRLEN];
     /* remote server port number */
-    uint16_t remote_server_port;
+    uint16_t gpusph_port;
     /* udp buffer length in use */
     int udp_buf_size;
     /* display red bits */
@@ -207,13 +207,11 @@ void *heartbeat_thread_main(void *user_data) {
     fcntl(sw->heartbeat_socket_fd, F_SETFL, O_NONBLOCK);
 
     /* resolve host name */
-    printf("resolving %s\n", sw->remote_server_host);
-    fflush(stdout);
     memset(&address_hints, 0, sizeof address_hints); /* clear the struct */
     address_hints.ai_family = AF_UNSPEC;     /* IPv4 or IPv6 */
     address_hints.ai_socktype = SOCK_DGRAM;  /* UDP */
-    sprintf(port_as_string, "%i", sw->remote_server_port);
-    if ((err = getaddrinfo(sw->remote_server_host, port_as_string,
+    sprintf(port_as_string, "%i", sw->gpusph_port);
+    if ((err = getaddrinfo(sw->gpusph_host, port_as_string,
         &address_hints, &server_address_info))) {
         fprintf(stderr, "getaddrinfo() failed: %s", gai_strerror(err));
         close(sw->heartbeat_socket_fd);
@@ -223,7 +221,6 @@ void *heartbeat_thread_main(void *user_data) {
     /* loop over returned IP addresses, just use the first IPv4 */
     for (address_p = server_address_info; address_p != NULL;
         address_p = address_p->ai_next) {
-        char ipstr[INET6_ADDRSTRLEN];
 
         void *addr;
         char *ipver;
@@ -234,39 +231,19 @@ void *heartbeat_thread_main(void *user_data) {
             memcpy(&heartbeat_socket_remote_address, address_p->ai_addr,
                 sizeof(address_p->ai_addr));
             heartbeat_socket_remote_address_len = address_p->ai_addrlen;
+            inet_ntop(address_p->ai_family, addr, sw->gpusph_host,
+                sizeof(sw->gpusph_host));
+            break;
         } else { /* IPv6 */
             struct sockaddr_in6 *ipv6 =
                 (struct sockaddr_in6 *)address_p->ai_addr;
             addr = &(ipv6->sin6_addr);
             ipver = "IPv6";
         }
-        inet_ntop(address_p->ai_family, addr, ipstr, sizeof(ipstr));
-        printf("Heartbeat using  %s: %s\n", ipver, ipstr);
     }
 
     /* free linked-list returned from resolver */
     freeaddrinfo(server_address_info);
-
-#ifdef OLDSKOOL
-    /* set remote server address */
-    memset((char *)&heartbeat_socket_remote_address, 0,
-           sizeof(heartbeat_socket_remote_address));
-    if ((err = inet_pton(AF_INET, sw->remote_server_host,
-                        &(heartbeat_socket_remote_address.sin_addr))) <= 0) {
-        if (err == 0) {
-            /* unparseable string format */
-            fprintf(stderr, "Unparseable IP address: %s\n",
-                sw->remote_server_host);
-        } else {
-            /* errno is set */
-            fprintf(stderr, "Invalid IP address: %s\n", sw->remote_server_host);
-            perror("inet_pton()");
-        }
-        return(NULL);
-    }
-    /* set remote server port */
-    heartbeat_socket_remote_address.sin_port = htons(sw->remote_server_port);
-#endif
 
     /* clear heartbeat packet */
     memset(&hb, 0, sizeof(ptp_heartbeat_t));
@@ -335,7 +312,6 @@ Data thread loop.  This function is the main loop for the data thread.
 void *data_thread_main(void *user_data) {
     /* option value */
     int optval = 1;
-    char ipstr[1024];
 
     /* bind hints */
     struct addrinfo hints;
@@ -360,28 +336,24 @@ void *data_thread_main(void *user_data) {
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
-
-    sprintf(port_as_string, "%i", sw->local_server_port);
-    printf("Attempting to bind to %s:%s\n", sw->local_server_host, port_as_string);
-    if((err=getaddrinfo(sw->local_server_host, port_as_string, &hints, &res))) {
+    sprintf(port_as_string, "%i", sw->data_port);
+    if((err=getaddrinfo(sw->data_host, port_as_string, &hints, &res))) {
        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
        exit(1);
     }
 
+    /* walk through resulting list of addresses, use first IPv4 */
     for(p = res; p!=NULL;p = p->ai_next) {
-        printf("getaddrinfo() result!\n");
         if(p->ai_family == AF_INET) {
             struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
-            if(inet_ntop(res->ai_family, &(ipv4->sin_addr), ipstr,
-                sizeof(ipstr)) == NULL) {
+            if(inet_ntop(res->ai_family, &(ipv4->sin_addr),
+                sw->data_host, sizeof(sw->data_host)) == NULL) {
                 perror("inet_ntop error");
                 exit(1);
             }
             break;
         }
     }
-
-    printf("Receive channel: %s\n", ipstr);
 
     /* create server socket */
     if ((sw->data_socket_fd = socket(res->ai_family, res->ai_socktype,
@@ -460,13 +432,11 @@ void *data_thread_main(void *user_data) {
         /* receive a packet */
         memset((char *) &data_socket_remote_address, 0,
                sizeof(data_socket_remote_address));
-        /*printf("waiting...\n");fflush(stdout);*/
         packet_length_bytes = recvfrom(sw->data_socket_fd, &packet,
                                        sizeof(ptp_packet_t),
                                        0, (struct sockaddr *)
                                        &data_socket_remote_address,
                                        &data_socket_remote_address_len);
-        /*printf("done waiting with %ld...\n", packet_length_bytes);fflush(stdout);*/
 
         /* did we receive a packet? */
         if (packet_length_bytes == sizeof(ptp_packet_t)) {
@@ -584,6 +554,8 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
         {"help", no_argument, 0,  'x' },
         {"host", required_argument, 0,  'h' },
         {"port", required_argument, 0,  'p' },
+        {"local_host", required_argument, 0,  't' },
+        {"local_port", required_argument, 0,  'l' },
         { 0, 0, 0, 0}
     };
 
@@ -595,13 +567,12 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     s->win_height = 600;
 
     /* default local host, port */
-    strcpy(s->local_server_host, PTP_DEFAULT_CLIENT_HOST);
-    s->local_server_port = PTP_DEFAULT_CLIENT_PORT;
-strcpy(s->local_server_host, "172.25.101.2");
+    strcpy(s->data_host, PTP_DEFAULT_CLIENT_HOST);
+    s->data_port = PTP_DEFAULT_CLIENT_PORT;
 
     /* default remote host, port */
-    strcpy(s->remote_server_host, PTP_DEFAULT_SERVER_HOST);
-    s->remote_server_port = PTP_DEFAULT_SERVER_PORT;
+    strcpy(s->gpusph_host, PTP_DEFAULT_SERVER_HOST);
+    s->gpusph_port = PTP_DEFAULT_SERVER_PORT;
 
     /* display settings */
     s->red_bits = 8;
@@ -619,22 +590,29 @@ strcpy(s->local_server_host, "172.25.101.2");
     s->background_color[3] = 0.0f;
 
     /* process command-line arguments */
-    while ((opt = getopt_long(argc, argv, "h:p:", long_options, &option_index))
-        != -1) {
+    while ((opt = getopt_long(argc, argv, "h:p:t:r:", long_options,
+        &option_index)) != -1) {
         switch(opt) {
             case 'h':
-                strncpy(s->remote_server_host, optarg, INET6_ADDRSTRLEN);
+                strncpy(s->gpusph_host, optarg, INET6_ADDRSTRLEN);
                 break;
             case 'p':
-                s->remote_server_port = atoi(optarg);
+                s->gpusph_port = atoi(optarg);
+                break;
+            case 't':
+                strncpy(s->data_host, optarg, INET6_ADDRSTRLEN);
+                break;
+            case 'r':
+                s->data_port = atoi(optarg);
                 break;
             default:
                 printf("seewaves %i.%i\n\n", VERSION_HIGH, VERSION_LOW);
                 printf("usage: seewaves [ options ]\n\n");
                 printf("Options:\n\n");
-                printf("--host -h <server>  Particle server name or IP "\
-                    "(127.0.0.1)\n");
-                printf("--port -p <port>    Particle server port (5001)\n");
+                printf("--host -h <server>     GPUSPH host (127.0.0.1)\n");
+                printf("--port -p <port>       GPUSPH port (5001)\n");
+                printf("--in_host -t <server>  Incoming host (127.0.0.1)\n");
+                printf("--in_port -r <port>    Incoming port (5000)\n");
                 return(-5);
                 break;
         }
@@ -772,7 +750,10 @@ void display(void) {
     glEnd();
 
     /* display status */
-    sprintf(status_msg, "%i packets, %i particles, t=%.3fs",
+    sprintf(status_msg,
+        "hb=%s:%i, data=%s:%i,%i packets, %i particles, t=%.3fs",
+        g_seewaves.gpusph_host, g_seewaves.gpusph_port,
+        g_seewaves.data_host, g_seewaves.data_port,
         g_seewaves.packets_received, 
         g_seewaves.total_particle_count,
         g_seewaves.most_recent_timestamp);
@@ -869,8 +850,13 @@ int main(int argc, char **argv) {
     }
 
     /* close the underlying sockets, results in threads exiting gracefully */
+#ifdef __APPLE__
+    close(g_seewaves.data_socket_fd);
+    close(g_seewaves.heartbeat_socket_fd);
+#else
     shutdown(g_seewaves.data_socket_fd, SHUT_RDWR);
     shutdown(g_seewaves.heartbeat_socket_fd, SHUT_RDWR);
+#endif
 
     /* wait for threads to finish */
     if ((err = pthread_join(g_seewaves.data_thread, NULL))) {
