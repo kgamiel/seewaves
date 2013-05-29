@@ -27,10 +27,7 @@ Strategy    : PTP uses User Datagram Protocol (UDP) over Internet Protocol (IP)
                 the server which particle type to send.
                 - data thread.  This thread listens for incoming UDP packets,
                 decodes them, and updates internal data structures.
-Usage       : seewaves [ server port ]
-                server - name or IP address of particle server (GPUSPH),
-                defaults to 127.0.0.1
-                port - port number for particle server, defaults to 50001
+Usage       : seewaves --help
 ============================================================================*/
 #include <stdio.h>
 #include <unistd.h>
@@ -39,7 +36,7 @@ Usage       : seewaves [ server port ]
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>
-#include <GL/glfw.h>
+#include "GL/glfw.h"
 #ifdef __APPLE__
 #include <GLUT/glut.h>
 #else
@@ -138,7 +135,7 @@ void *data_thread_main(void *user_data);
 void camera_reset(void);
 int initialize_application(seewaves_t *s, int argc, char **argv);
 void initialize_gl(seewaves_t *s);
-void display(void);
+int display(void);
 void GLFWCALL on_key(int key, int action);
 void GLFWCALL on_resize(int w, int h);
 void view_ortho(int x, int y);
@@ -179,7 +176,7 @@ void *heartbeat_thread_main(void *user_data) {
     char port_as_string[16];
 
     /* return values */
-    int err;
+    long err;
 
     /* heartbeat packet */
     ptp_heartbeat_t hb;
@@ -213,7 +210,7 @@ void *heartbeat_thread_main(void *user_data) {
     sprintf(port_as_string, "%i", sw->gpusph_port);
     if ((err = getaddrinfo(sw->gpusph_host, port_as_string,
         &address_hints, &server_address_info))) {
-        fprintf(stderr, "getaddrinfo() failed: %s", gai_strerror(err));
+        fprintf(stderr, "getaddrinfo() failed: %s", gai_strerror((int)err));
         close(sw->heartbeat_socket_fd);
         pthread_exit(NULL);
     }
@@ -229,7 +226,7 @@ void *heartbeat_thread_main(void *user_data) {
             addr = &(ipv4->sin_addr);
             ipver = "IPv4";
             memcpy(&heartbeat_socket_remote_address, address_p->ai_addr,
-                sizeof(address_p->ai_addr));
+                heartbeat_socket_remote_address_len);
             heartbeat_socket_remote_address_len = address_p->ai_addrlen;
             inet_ntop(address_p->ai_family, addr, sw->gpusph_host,
                 sizeof(sw->gpusph_host));
@@ -249,7 +246,7 @@ void *heartbeat_thread_main(void *user_data) {
     memset(&hb, 0, sizeof(ptp_heartbeat_t));
 
     /* initialize timing */
-    time(&last_heartbeat_sent);
+    last_heartbeat_sent = 0;
 
     /* main thread loop */
     while(!done) {
@@ -258,11 +255,10 @@ void *heartbeat_thread_main(void *user_data) {
 
         /* get current time */
         time(&now);
-
         /* is it time to send a heartbeat? */
         if (difftime(now, last_heartbeat_sent) > PTP_HEARTBEAT_TTL_S) {
             /* yes, send a heartbeat */
-            int bytes_sent;
+            ssize_t bytes_sent;
             bytes_sent = sendto(sw->heartbeat_socket_fd, &hb,
                 sizeof(ptp_heartbeat_t), 0,
                 (const struct sockaddr *)(&heartbeat_socket_remote_address),
@@ -282,8 +278,24 @@ void *heartbeat_thread_main(void *user_data) {
         }
         /* has main thread closed our socket? */
         err = recvfrom(sw->heartbeat_socket_fd, &b, sizeof(b), 0, NULL, NULL);
-        if (err <= 0) {
-            done = 1;
+        if (err == 0) {
+            /* socket closed on linux */
+            break;
+        } else {
+            if(errno == EAGAIN) {
+                /* ignore, we're non-blocking and nothings ready */
+            } else if(errno == EINTR) {
+                /* ignore */
+            } else if (errno == EBADF) {
+                /* Parent thread closed the socket, that's our signal that
+                we're done */
+                done = 1;
+            } else if (errno == ETIMEDOUT) {
+                /* ignore */
+            } else {
+                perror("heartbeat recvfrom");
+                break;
+            }
         }
         /* give cpu a break */
         usleep(10);
@@ -337,9 +349,9 @@ void *data_thread_main(void *user_data) {
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
     sprintf(port_as_string, "%i", sw->data_port);
-    if((err=getaddrinfo(sw->data_host, port_as_string, &hints, &res))) {
+    if((err = getaddrinfo(sw->data_host, port_as_string, &hints, &res))) {
        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
-       exit(1);
+       exit(EXIT_FAILURE);
     }
 
     /* walk through resulting list of addresses, use first IPv4 */
@@ -349,7 +361,7 @@ void *data_thread_main(void *user_data) {
             if(inet_ntop(res->ai_family, &(ipv4->sin_addr),
                 sw->data_host, sizeof(sw->data_host)) == NULL) {
                 perror("inet_ntop error");
-                exit(1);
+                exit(EXIT_FAILURE);
             }
             break;
         }
@@ -386,6 +398,9 @@ void *data_thread_main(void *user_data) {
         perror("bind");
         pthread_exit(NULL);
     }
+
+    /* free the returned linked list */
+    freeaddrinfo(res);
 
     /* Set maximum UDP receiver buffer size.  Strategy is to increase until
     it fails, then fall back to last one that worked (must be a better way!) */
@@ -443,7 +458,7 @@ void *data_thread_main(void *user_data) {
             /* yes, get mutex lock */
             int locked = 0;
             while(!locked) {
-                if (pthread_mutex_trylock(&sw->lock)) {
+                if ((err = pthread_mutex_trylock(&sw->lock)) == 0) {
                     /* got the lock */
                     unsigned int particle = 0;
 
@@ -492,6 +507,14 @@ void *data_thread_main(void *user_data) {
                     /* Release the lock */
                     if ((err = pthread_mutex_unlock(&sw->lock))) {
                         fprintf(stderr, "Error creating mutex: %i\n", err);
+                    }
+                } else {
+                    if(err == EBUSY) {
+                        /* mutex was locked */
+                    } else if(err == EINVAL) {
+                        fprintf(stderr, "Invalid mutex lock?");
+                    } else {
+                        fprintf(stderr, "Unhandled mutex lock error: %i", err);
                     }
                 }
             }
@@ -589,6 +612,11 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     s->background_color[2] = 1.0f;
     s->background_color[3] = 0.0f;
 
+    g_seewaves.viewport[0] = 0;
+    g_seewaves.viewport[1] = 0;
+    g_seewaves.viewport[2] = g_seewaves.win_width;
+    g_seewaves.viewport[3] = g_seewaves.win_height;
+    
     /* process command-line arguments */
     while ((opt = getopt_long(argc, argv, "h:p:t:r:", long_options,
         &option_index)) != -1) {
@@ -698,8 +726,10 @@ void display_status(char *s) {
 /*
 Called at the start of the program, after a glutPostRedisplay() and during idle
 to display a frame
+
+@returns 1 if redrawn, 0 if unchanged
 */
-void display(void) {
+int display(void) {
     /* return value */
     int err;
     /* loop iterator */
@@ -707,6 +737,11 @@ void display(void) {
 
     /* status message buffer */
     char status_msg[1024];
+
+    if ((err = pthread_mutex_trylock(&g_seewaves.lock))) {
+        perror("Error locking mutex during display");
+        return 0;
+    }
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glLoadIdentity();
@@ -738,26 +773,26 @@ void display(void) {
     glEnd();
     glColor3f(0.0, 0.0, 1.0);
     glBegin(GL_POINTS);
-    if ((err = pthread_mutex_lock(&g_seewaves.lock))) {
-        fprintf(stderr, "Error locking mutex: %i\n", err);
-    }
     for(i = 0; i < g_seewaves.total_particle_count; i++) {
         glVertex3f(g_seewaves.x[i], g_seewaves.y[i], g_seewaves.z[i]);
-    }
-    if ((err = pthread_mutex_unlock(&g_seewaves.lock))) {
-        fprintf(stderr, "Error unlocking mutex: %i\n", err);
     }
     glEnd();
 
     /* display status */
     sprintf(status_msg,
-        "hb=%s:%i, data=%s:%i,%i packets, %i particles, t=%.3fs",
+        "send=%s:%i, recv=%s:%i, %i beats, %i packets, %i particles, "\
+            "t=%.3fs",
         g_seewaves.gpusph_host, g_seewaves.gpusph_port,
         g_seewaves.data_host, g_seewaves.data_port,
+        g_seewaves.heartbeats_sent,
         g_seewaves.packets_received, 
         g_seewaves.total_particle_count,
         g_seewaves.most_recent_timestamp);
     display_status(status_msg);
+    if ((err = pthread_mutex_unlock(&g_seewaves.lock))) {
+        fprintf(stderr, "Error unlocking mutex: %i\n", err);
+    }
+    return 1;
 }
 
 void GLFWCALL on_key(int key, int action) {
@@ -796,18 +831,13 @@ int main(int argc, char **argv) {
 
     /* initialize the application */
     if ((err = initialize_application(&g_seewaves, argc, argv))) {
-        exit(err);
+        exit(EXIT_FAILURE);
     }
 
     /* initialize glfw */
     if (!glfwInit()) {
-        exit(-1);
+        exit(EXIT_FAILURE);
     }
-
-    g_seewaves.viewport[0] = 0;
-    g_seewaves.viewport[1] = 0;
-    g_seewaves.viewport[2] = g_seewaves.win_width;
-    g_seewaves.viewport[3] = g_seewaves.win_height;
 
     /* open the GL window */
     if (!glfwOpenWindow(g_seewaves.win_width,
@@ -840,10 +870,10 @@ int main(int argc, char **argv) {
         }
 
         /* render display */
-        display();
-
-        /* swap the display buffer */
-        glfwSwapBuffers();
+        if(display()) {
+            /* swap the display buffer */
+            glfwSwapBuffers();
+        }
 
         /* give the CPU a break */
         usleep(10);
@@ -869,5 +899,5 @@ int main(int argc, char **argv) {
     /* terminate glfw */
     glfwTerminate();
 
-    return(0);
+    exit(EXIT_SUCCESS);
 }

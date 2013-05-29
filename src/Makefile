@@ -9,13 +9,13 @@ IDIR = .
 CC=gcc
 ifeq ($(platform), Linux)
 	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
-	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) -O3 \
+	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) \
     -D_POSIX_C_SOURCE=200112L -D_BSD_SOURCE
 	LIBS=-lglfw -lGL -lGLU -lm -lpthread -lglut
 else ifeq ($(platform), Darwin)
 	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
-	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) -O3
-	LIBS=-lglfw -framework OpenGL -framework GLUT
+	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) -g -I/usr/local/include
+	LIBS=-L/usr/local/lib -lglfw -framework OpenGL -framework GLUT -framework Foundation -framework Cocoa -framework IOKit
 endif
 
 
