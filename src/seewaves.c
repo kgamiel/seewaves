@@ -61,6 +61,8 @@ extern char *optarg;
 
 /* Global application data structure */
 typedef struct _seewaves_t {
+	/* verbosity */
+	int verbosity;
     /* heartbeat thread, sends packets to server */
     pthread_t heartbeat_thread;
     /* heartbeat thread socket descriptor */
@@ -105,8 +107,6 @@ typedef struct _seewaves_t {
     char gpusph_host[INET6_ADDRSTRLEN];
     /* remote server port number */
     uint16_t gpusph_port;
-    /* udp buffer length in use */
-    int udp_buf_size;
     /* display red bits */
     int red_bits;
     /* display green bits */
@@ -127,6 +127,8 @@ typedef struct _seewaves_t {
     GLint viewport[4];
     /* most recent timestamp */
     float most_recent_timestamp;
+    /* UDP receiver buffer size (optionally set by user) */
+    int udp_buffer_size;
 } seewaves_t;
 
 /* Local prototypes */
@@ -142,12 +144,76 @@ void view_ortho(int x, int y);
 void display_status(char *s);
 void view_perspective(void);
 
+/* formatting flag */
+typedef enum { BASIC, FULL } seewaves_format_t;
+
 /* Global application data variable */
 seewaves_t g_seewaves;
 
 /* Print pthreads error user-defined and internal error message. */
 #define PT_ERR_MSG(str, code) { \
 		fprintf(stderr, "%s: %s\n", str, strerror(code)); \
+}
+
+/*
+Print structure information.
+
+@param	s	Application data structure.
+@param	format	Format specifier.
+@param	fd	File descriptor
+*/
+void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd) {
+	FILE *fp = fdopen(fd, "w+");
+	if(fp == NULL) {
+		perror("util_print_seewaves");
+		return;
+	}
+	fprintf(fp, "verbosity:\t\t%i\n", s->verbosity);
+	fprintf(fp, "heartbeats_sent:\t%i\n", s->heartbeats_sent);
+	fprintf(fp, "total_particle_count:\t%i\n", s->total_particle_count);
+	fprintf(fp, "eye:\t\t\t(%2f, %.2f, %.2f)\n", s->eye[0], s->eye[1], s->eye[2]);
+	fprintf(fp, "center:\t\t\t(%2f, %.2f, %.2f)\n", s->center[0], s->center[1], s->center[2]);
+	fprintf(fp, "packets_received:\t%i\n", s->packets_received);
+	fprintf(fp, "win_width:\t\t%i\n", s->win_width);
+	fprintf(fp, "win_height:\t\t%i\n", s->win_height);
+	fprintf(fp, "data_host:\t\t%s\n", s->data_host);
+	fprintf(fp, "data_port:\t\t%i\n", s->data_port);
+	fprintf(fp, "gpusph_host:\t\t%s\n", s->gpusph_host);
+	fprintf(fp, "gpusph_port:\t\t%i\n", s->gpusph_port);
+	fprintf(fp, "most_recent_timestamp:\t%.2f\n", s->most_recent_timestamp);
+	fprintf(fp, "UDP buffer size:\t%i\n", s->udp_buffer_size);
+	if(format == FULL) {
+		/* dump positions et al, maybe to a file(?) */
+	}
+}
+
+/*
+Utility function to get UDP receiver buffer size.
+
+@param	sd	socket descriptor or -1 for system default
+
+@returns size in bytes
+*/
+int util_get_udp_buffer_size(int sd) {
+	int size;
+	int len = sizeof(int);
+
+	if(sd == -1) {
+		int fd;
+		if ((fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
+			perror("socket");
+			return(0);
+		}
+		if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, (socklen_t*)&len) == -1) {
+			perror("getsockopt(bufsize)");
+			close(fd);
+		}
+		return(size);
+	}
+	if (getsockopt(sd, SOL_SOCKET, SO_RCVBUF, &size, (socklen_t*)&len) == -1) {
+		perror("getsockopt(bufsize)");
+	}
+	return(size);
 }
 
 /*
@@ -226,7 +292,7 @@ void *heartbeat_thread_main(void *user_data) {
             addr = &(ipv4->sin_addr);
             ipver = "IPv4";
             memcpy(&heartbeat_socket_remote_address, address_p->ai_addr,
-                heartbeat_socket_remote_address_len);
+                (size_t)heartbeat_socket_remote_address_len);
             heartbeat_socket_remote_address_len = address_p->ai_addrlen;
             inet_ntop(address_p->ai_family, addr, sw->gpusph_host,
                 sizeof(sw->gpusph_host));
@@ -327,10 +393,7 @@ void *data_thread_main(void *user_data) {
 
     /* bind hints */
     struct addrinfo hints;
-    struct addrinfo *res, *p;
-
-    /* exponent */
-    double exp = 1;
+    struct addrinfo *res;
 
     /* loop exit variable */
     int done = 0;
@@ -352,19 +415,6 @@ void *data_thread_main(void *user_data) {
     if((err = getaddrinfo(sw->data_host, port_as_string, &hints, &res))) {
        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
        exit(EXIT_FAILURE);
-    }
-
-    /* walk through resulting list of addresses, use first IPv4 */
-    for(p = res; p!=NULL;p = p->ai_next) {
-        if(p->ai_family == AF_INET) {
-            struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
-            if(inet_ntop(res->ai_family, &(ipv4->sin_addr),
-                sw->data_host, sizeof(sw->data_host)) == NULL) {
-                perror("inet_ntop error");
-                exit(EXIT_FAILURE);
-            }
-            break;
-        }
     }
 
     /* create server socket */
@@ -399,39 +449,16 @@ void *data_thread_main(void *user_data) {
         pthread_exit(NULL);
     }
 
-    /* free the returned linked list */
-    freeaddrinfo(res);
-
-    /* Set maximum UDP receiver buffer size.  Strategy is to increase until
-    it fails, then fall back to last one that worked (must be a better way!) */
-#define SET_RECV_BUF
-#ifdef SET_RECV_BUF
-    for(;; exp++) {
-        /* compute a value */
-        int a;
-        a = sizeof(ptp_packet_t) * (int)pow(2.0, exp);
-
-        /* try to set to that value (up to 1024 times packet size) */
-        if ((a > (1024 * (int)sizeof(ptp_packet_t))) ||
-            (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &a,
-            (socklen_t)(sizeof(int))) == -1)) {
-            /* Intentional failure, set it to highest successful value */
-            a = sizeof(ptp_packet_t) * pow(2, (exp - 1));
-            if (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &a,
-                           sizeof(int)) == -1) {
-
-                /* Unintentional failure, uh oh */
-                perror("setsockopt(SO_RCVBUF)");
-            }
-            break;
-        }
+    /* Optionally set maximum UDP receiver buffer size */
+    if(sw->udp_buffer_size > 0) {
+    	if (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &sw->udp_buffer_size,
+    			(socklen_t)(sizeof(int))) == -1) {
+    		perror("setsockopt(SO_RCVBUF)");
+    	}
     }
-#endif
+
     /* get actual UDP receive buffer size in use */
-    if (getsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF, &sw->udp_buf_size,
-                  (socklen_t*)&err) == -1) {
-        perror("getsocketbufsize");
-    }
+    sw->udp_buffer_size = util_get_udp_buffer_size(sw->data_socket_fd);
 
     /* Loop until application asks us to exit */
     while(!done) {
@@ -579,6 +606,7 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
         {"port", required_argument, 0,  'p' },
         {"in_host", required_argument, 0,  't' },
         {"in_port", required_argument, 0,  'l' },
+        {"verbosity", required_argument, 0,  'v' },
         { 0, 0, 0, 0}
     };
 
@@ -618,7 +646,7 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     g_seewaves.viewport[3] = g_seewaves.win_height;
     
     /* process command-line arguments */
-    while ((opt = getopt_long(argc, argv, "h:p:t:r:", long_options,
+    while ((opt = getopt_long(argc, argv, "h:p:t:r:u:v:", long_options,
         &option_index)) != -1) {
         switch(opt) {
             case 'h':
@@ -633,14 +661,23 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
             case 'r':
                 s->data_port = atoi(optarg);
                 break;
+            case 'u':
+                s->udp_buffer_size = atoi(optarg);
+                break;
+            case 'v':
+                s->verbosity = 9;
+                break;
             default:
                 printf("seewaves %i.%i\n\n", VERSION_HIGH, VERSION_LOW);
                 printf("usage: seewaves [ options ]\n\n");
                 printf("Options:\n\n");
-                printf("--host -h <server>     GPUSPH host (127.0.0.1)\n");
-                printf("--port -p <port>       GPUSPH port (5001)\n");
-                printf("--in_host -t <server>  Incoming host (127.0.0.1)\n");
-                printf("--in_port -r <port>    Incoming port (5000)\n");
+                printf("--host -h <server>     GPUSPH host (%s)\n", PTP_DEFAULT_SERVER_HOST);
+                printf("--port -p <port>       GPUSPH port (%i)\n", PTP_DEFAULT_SERVER_PORT);
+                printf("--in_host -t <server>  Incoming host (ALL)\n");
+                printf("--in_port -r <port>    Incoming port (%i)\n", PTP_DEFAULT_CLIENT_PORT);
+                printf("--udp_size -u <size>   UDP receive buffer size (%i)\n",
+                		util_get_udp_buffer_size(-1));
+                printf("--verbosity -v <level> Verbosity level 0-9 (0)\n");
                 return(-5);
                 break;
         }
@@ -742,7 +779,7 @@ int display(void) {
         if(err != EBUSY) {
             perror("Error locking mutex during display");
         }
-        return 0;
+        return(0);
     }
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -794,7 +831,7 @@ int display(void) {
     if ((err = pthread_mutex_unlock(&g_seewaves.lock))) {
         fprintf(stderr, "Error unlocking mutex: %i\n", err);
     }
-    return 1;
+    return(1);
 }
 
 void GLFWCALL on_key(int key, int action) {
@@ -804,6 +841,18 @@ void GLFWCALL on_key(int key, int action) {
                 g_seewaves.flag_exit_main_loop = 1;
             }
             break;
+        case 'd': {
+        	/* dump internals for inspection */
+        	time_t now;
+        	struct tm * timeinfo;
+        	char b[64];
+        	time(&now);
+        	timeinfo = localtime(&now);
+        	strftime(b, sizeof(b), "%c", timeinfo);
+        	fprintf(stdout, "========= %s =========\n", b);
+        	util_print_seewaves(&g_seewaves, FULL, 0);
+        	break;
+        }
         default:
             /* unhandled key */
             break;
@@ -828,13 +877,13 @@ int main(int argc, char **argv) {
     /* return value */
     int err;
 
-    /* we use glut just fonts right now */
-    glutInit(&argc, argv);
-
     /* initialize the application */
     if ((err = initialize_application(&g_seewaves, argc, argv))) {
         exit(EXIT_FAILURE);
     }
+
+    /* we use glut just fonts right now */
+    glutInit(&argc, argv);
 
     /* initialize glfw */
     if (!glfwInit()) {
@@ -855,6 +904,7 @@ int main(int argc, char **argv) {
     }
 
     /* set a keyboard callback function */
+    glfwSetCharCallback(on_key);
     glfwSetKeyCallback(on_key);
 
     /* set a window resize callback function */
@@ -862,6 +912,11 @@ int main(int argc, char **argv) {
 
     /* perform any gl-related initialization */
     initialize_gl(&g_seewaves);
+
+    /* optionally dump some internals */
+    if(g_seewaves.verbosity) {
+    	util_print_seewaves(&g_seewaves, FULL, 0);
+    }
 
     /* loop until the user closes the window or exits */
     while (g_seewaves.flag_exit_main_loop != 1) {
