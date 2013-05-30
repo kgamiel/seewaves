@@ -739,7 +739,9 @@ int display(void) {
     char status_msg[1024];
 
     if ((err = pthread_mutex_trylock(&g_seewaves.lock))) {
-        perror("Error locking mutex during display");
+        if(err != EBUSY) {
+            perror("Error locking mutex during display");
+        }
         return 0;
     }
 

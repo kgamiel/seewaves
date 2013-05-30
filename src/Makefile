@@ -18,7 +18,7 @@ else ifeq ($(platform), Darwin)
 	LIBS=-L/usr/local/lib -lglfw -framework OpenGL -framework GLUT -framework Foundation -framework Cocoa -framework IOKit
 endif
 
-
+all: seewaves
 
 ODIR=obj
 LDIR =../lib
