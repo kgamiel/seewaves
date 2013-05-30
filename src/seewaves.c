@@ -688,9 +688,9 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
                 printf("seewaves %i.%i (%s)\n\n", VERSION_HIGH, VERSION_LOW, b);
                 printf("usage: seewaves [ options ]\n\n");
                 printf("Options:\n\n");
-                printf("--host -h <server>     GPUSPH host (%s)\n", PTP_DEFAULT_SERVER_HOST);
+                printf("--host -h <address>    GPUSPH host (%s)\n", PTP_DEFAULT_SERVER_HOST);
                 printf("--port -p <port>       GPUSPH port (%i)\n", PTP_DEFAULT_SERVER_PORT);
-                printf("--in_host -t <server>  Incoming host (ALL)\n");
+                printf("--in_host -t <address> Incoming host (ALL)\n");
                 printf("--in_port -r <port>    Incoming port (%i)\n", PTP_DEFAULT_CLIENT_PORT);
                 printf("--udp_size -u <size>   UDP receive buffer size (%i)\n",
                 		util_get_udp_buffer_size(-1));
