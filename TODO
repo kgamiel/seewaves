@@ -1,3 +1,8 @@
+Critical
+- Bind to all interfaces by default
+- Mouse navigation
+
+Secondary
 - look at naming for local v. remote host names, ports
 - use float[4] instead of separate x, y, z and w(?)
 - have gui reset display on model restart

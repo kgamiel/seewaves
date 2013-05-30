@@ -131,6 +131,9 @@ typedef struct _seewaves_t {
     int udp_buffer_size;
 } seewaves_t;
 
+/* formatting flag */
+typedef enum { BASIC, FULL } seewaves_format_t;
+
 /* Local prototypes */
 void *heartbeat_thread_main(void *user_data);
 void *data_thread_main(void *user_data);
@@ -143,9 +146,8 @@ void GLFWCALL on_resize(int w, int h);
 void view_ortho(int x, int y);
 void display_status(char *s);
 void view_perspective(void);
-
-/* formatting flag */
-typedef enum { BASIC, FULL } seewaves_format_t;
+void util_get_current_time_string(char *buf, ssize_t max_len);
+void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd);
 
 /* Global application data variable */
 seewaves_t g_seewaves;
@@ -216,6 +218,19 @@ int util_get_udp_buffer_size(int sd) {
 	return(size);
 }
 
+/*
+Get current date/time as a formatted string.
+
+@param	buf	Buffer into which string is stored.
+@param	max_len	Size of buffer
+*/
+void util_get_current_time_string(char *buf, ssize_t max_len) {
+	time_t now;
+	struct tm * timeinfo;
+	time(&now);
+	timeinfo = localtime(&now);
+	strftime(buf, max_len, "%m-%d-%Y_%X", timeinfo);
+}
 /*
 Heartbeat thread loop.
 This function is the main loop for the heartbeat thread.  It sends heartbeat
@@ -667,8 +682,10 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
             case 'v':
                 s->verbosity = 9;
                 break;
-            default:
-                printf("seewaves %i.%i\n\n", VERSION_HIGH, VERSION_LOW);
+            default: {
+               	char b[64];
+               	util_get_current_time_string(b, sizeof(b));
+                printf("seewaves %i.%i (%s)\n\n", VERSION_HIGH, VERSION_LOW, b);
                 printf("usage: seewaves [ options ]\n\n");
                 printf("Options:\n\n");
                 printf("--host -h <server>     GPUSPH host (%s)\n", PTP_DEFAULT_SERVER_HOST);
@@ -680,6 +697,7 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
                 printf("--verbosity -v <level> Verbosity level 0-9 (0)\n");
                 return(-5);
                 break;
+            }
         }
     }
 
@@ -750,9 +768,7 @@ void view_ortho(int x, int y) {
 void display_status(char *s) {
     int len, i;
     view_ortho(g_seewaves.viewport[2], g_seewaves.viewport[3]); 
-    /*float3 tank_size = problem->m_size;*/
     glRasterPos2i(10, 10);
-    /*glRasterPos3f(tank_size.x, tank_size.y, 0.0);*/
     len = (int) strlen(s);
     for (i = 0; i < len; i++) {
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, s[i]);
@@ -843,12 +859,8 @@ void GLFWCALL on_key(int key, int action) {
             break;
         case 'd': {
         	/* dump internals for inspection */
-        	time_t now;
-        	struct tm * timeinfo;
         	char b[64];
-        	time(&now);
-        	timeinfo = localtime(&now);
-        	strftime(b, sizeof(b), "%c", timeinfo);
+        	util_get_current_time_string(b, sizeof(b));
         	fprintf(stdout, "========= %s =========\n", b);
         	util_print_seewaves(&g_seewaves, FULL, 0);
         	break;
