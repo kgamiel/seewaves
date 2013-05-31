@@ -59,6 +59,8 @@ extern char *optarg;
 #define VERSION_HIGH 0
 #define VERSION_LOW 1
 
+typedef enum { HEADS_UP } seewaves_view_option_t;
+
 /* Global application data structure */
 typedef struct _seewaves_t {
 	/* verbosity */
@@ -129,6 +131,8 @@ typedef struct _seewaves_t {
     float most_recent_timestamp;
     /* UDP receiver buffer size (optionally set by user) */
     int udp_buffer_size;
+    /* view options bit string */
+    unsigned char view_options;
 } seewaves_t;
 
 /* formatting flag */
@@ -143,9 +147,6 @@ void initialize_gl(seewaves_t *s);
 int display(void);
 void GLFWCALL on_key(int key, int action);
 void GLFWCALL on_resize(int w, int h);
-void view_ortho(int x, int y);
-void display_status(char *s);
-void view_perspective(void);
 void util_get_current_time_string(char *buf, ssize_t max_len);
 void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd);
 
@@ -660,6 +661,8 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     g_seewaves.viewport[2] = g_seewaves.win_width;
     g_seewaves.viewport[3] = g_seewaves.win_height;
     
+    g_seewaves.view_options |= 1 << HEADS_UP;
+
     /* process command-line arguments */
     while ((opt = getopt_long(argc, argv, "h:p:t:r:u:v:", long_options,
         &option_index)) != -1) {
@@ -747,38 +750,43 @@ void initialize_gl(seewaves_t *s) {
     glShadeModel(GL_SMOOTH);
 }
 
-void view_perspective(void) {
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
+void render_string(int x, int y, char *s) {
+	int len;
+	int i;
+	glRasterPos2i(x, y);
+	len = (int) strlen(s);
+	for (i = 0; i < len; i++) {
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, s[i]);
+	}
 }
 
-/* heads up display */
-void view_ortho(int x, int y) {
-    glMatrixMode(GL_PROJECTION);
+void push_ortho(void) {
+	/* save current projection */
+	glMatrixMode(GL_PROJECTION);
     glPushMatrix();
+    /* clear current projection */
     glLoadIdentity();
-    glOrtho(0, x , 0, y , -1, 1);
+	/* switch to orthographic projection */
+    glOrtho(g_seewaves.viewport[0], g_seewaves.viewport[2],
+    		g_seewaves.viewport[1] , g_seewaves.viewport[3], -1, 1);
+    /* save current modelview */
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
+    /* clear current modelview */
     glLoadIdentity();
 }
 
-void display_status(char *s) {
-    int len, i;
-    view_ortho(g_seewaves.viewport[2], g_seewaves.viewport[3]); 
-    glRasterPos2i(10, 10);
-    len = (int) strlen(s);
-    for (i = 0; i < len; i++) {
-        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, s[i]);
-    }
-    view_perspective();
+void pop_ortho(void) {
+	/* restore saved projection */
+	glMatrixMode(GL_PROJECTION);
+	glPopMatrix();
+	/* restore saved modelview */
+	glMatrixMode(GL_MODELVIEW);
+	glPopMatrix();
 }
 
 /*
-Called at the start of the program, after a glutPostRedisplay() and during idle
-to display a frame
+Called from main loop to render the scene.
 
 @returns 1 if redrawn, 0 if unchanged
 */
@@ -833,17 +841,26 @@ int display(void) {
     }
     glEnd();
 
-    /* display status */
-    sprintf(status_msg,
-        "send=%s:%i, recv=%s:%i, %i beats, %i packets, %i particles, "\
-            "t=%.3fs",
-        g_seewaves.gpusph_host, g_seewaves.gpusph_port,
-        g_seewaves.data_host, g_seewaves.data_port,
-        g_seewaves.heartbeats_sent,
-        g_seewaves.packets_received, 
-        g_seewaves.total_particle_count,
-        g_seewaves.most_recent_timestamp);
-    display_status(status_msg);
+    /* is heads up display enabled? */
+    if (g_seewaves.view_options & (1 << HEADS_UP)) {
+        /* compose display text */
+    	sprintf(status_msg,
+    			"send=%s:%i, recv=%s:%i, %i beats, %i packets, %i particles, "\
+    			"t=%.3fs",
+    			g_seewaves.gpusph_host, g_seewaves.gpusph_port,
+    			g_seewaves.data_host, g_seewaves.data_port,
+    			g_seewaves.heartbeats_sent,
+    			g_seewaves.packets_received,
+    			g_seewaves.total_particle_count,
+    			g_seewaves.most_recent_timestamp);
+    	/* switch to ortho mode */
+    	push_ortho();
+    	/* draw the status */
+    	render_string(10, 10, status_msg);
+    	/* switch back */
+    	pop_ortho();
+    }
+    /* unlock data */
     if ((err = pthread_mutex_unlock(&g_seewaves.lock))) {
         fprintf(stderr, "Error unlocking mutex: %i\n", err);
     }
@@ -857,6 +874,11 @@ void GLFWCALL on_key(int key, int action) {
                 g_seewaves.flag_exit_main_loop = 1;
             }
             break;
+        case 'h': {
+        	/* toggle heads-up display */
+        	g_seewaves.view_options ^= 1 << HEADS_UP;
+        	break;
+        }
         case 'd': {
         	/* dump internals for inspection */
         	char b[64];
@@ -872,6 +894,7 @@ void GLFWCALL on_key(int key, int action) {
 }
 
 void on_resize(int w, int h) {
+	/* setup our "camera" */
     glViewport(0, 0, w, h);
     g_seewaves.viewport[0] = 0;
     g_seewaves.viewport[1] = 0;
@@ -881,6 +904,8 @@ void on_resize(int w, int h) {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluPerspective(100.0, (GLfloat)w / (GLfloat)h, 0.1, 100.0);
+
+    /* prepare for modeling and viewing transforms */
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 }
