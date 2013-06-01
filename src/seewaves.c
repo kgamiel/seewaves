@@ -176,9 +176,6 @@ void GLFWCALL on_key(int key, int action);
 void GLFWCALL on_resize(int w, int h);
 void util_get_current_time_string(char *buf, ssize_t max_len);
 void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd);
-void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
-		GLfloat up_x, GLfloat up_y, GLfloat up_z,
-		GLfloat center_x, GLfloat center_y, GLfloat center_z);
 
 /* Global application data variable */
 seewaves_t g_seewaves;
@@ -332,11 +329,9 @@ void *heartbeat_thread_main(void *user_data) {
         address_p = address_p->ai_next) {
 
         void *addr;
-        char *ipver;
         if (address_p->ai_family == AF_INET) { /* IPv4 */
             struct sockaddr_in *ipv4 = (struct sockaddr_in *)address_p->ai_addr;
             addr = &(ipv4->sin_addr);
-            ipver = "IPv4";
             memcpy(&heartbeat_socket_remote_address, address_p->ai_addr,
                 (size_t)heartbeat_socket_remote_address_len);
             heartbeat_socket_remote_address_len = address_p->ai_addrlen;
@@ -347,7 +342,6 @@ void *heartbeat_thread_main(void *user_data) {
             struct sockaddr_in6 *ipv6 =
                 (struct sockaddr_in6 *)address_p->ai_addr;
             addr = &(ipv6->sin6_addr);
-            ipver = "IPv6";
         }
     }
 
@@ -381,6 +375,8 @@ void *heartbeat_thread_main(void *user_data) {
                     /* hmm, real failure of some sort */
                     perror("sendto()");
                 }
+            } else if(bytes_sent == 0) {
+                done = 1;
             } else {
                 /* keep track of heartbeats sent */
                 sw->heartbeats_sent++;
@@ -392,7 +388,7 @@ void *heartbeat_thread_main(void *user_data) {
         err = recvfrom(sw->heartbeat_socket_fd, &b, sizeof(b), 0, NULL, NULL);
         if (err == 0) {
             /* socket closed on linux */
-            break;
+            done = 1;
         } else {
             if(errno == EAGAIN) {
                 /* ignore, we're non-blocking and nothings ready */
@@ -406,12 +402,17 @@ void *heartbeat_thread_main(void *user_data) {
                 /* ignore */
             } else {
                 perror("heartbeat recvfrom");
-                break;
+                done = 1;
             }
         }
         /* give cpu a break */
         usleep(10);
     }
+    if(sw->verbosity) {
+        fprintf(stdout, "Heartbeat thread exiting\n");
+        fflush(stdout);
+    }
+
     /* close our socket */
     close(sw->heartbeat_socket_fd);
 
@@ -506,6 +507,9 @@ void *data_thread_main(void *user_data) {
     /* get actual UDP receive buffer size in use */
     sw->udp_buffer_size = util_get_udp_buffer_size(sw->data_socket_fd);
 
+    /* enable non-blocking */
+    fcntl(sw->data_socket_fd, F_SETFL, O_NONBLOCK);
+
     /* Loop until application asks us to exit */
     while(!done) {
         struct sockaddr data_socket_remote_address;
@@ -593,7 +597,7 @@ void *data_thread_main(void *user_data) {
             }
         } else if (packet_length_bytes == 0) {
             /* socket closed on linux */
-            break;
+            done = 1;
         } else {
             if(errno == EINTR) {
                 /* ignore */
@@ -601,11 +605,24 @@ void *data_thread_main(void *user_data) {
                 /* Parent thread closed the socket, that's our signal that
                 we're done */
                 done = 1;
+            } else if (errno == EINVAL) {
+                /* Invalid argument */
+                done = 1;
+            } else if (errno == EAGAIN) {
+                /* ignore */
+            } else if (errno == EWOULDBLOCK) {
+                /* ignore */
             } else {
-                perror("recvfrom");
-                break;
+                printf("%i\n", errno);
+                perror("data recvfrom");
+                done = 1;
             }
         }
+        usleep(10);
+    }
+    if(sw->verbosity) {
+        printf("Data thread exiting\n");
+        fflush(stdout);
     }
 
     /* close our socket */
@@ -1270,13 +1287,10 @@ int main(int argc, char **argv) {
     }
 
     /* close the underlying sockets, results in threads exiting gracefully */
-#ifdef __APPLE__
     close(g_seewaves.data_socket_fd);
     close(g_seewaves.heartbeat_socket_fd);
-#else
     shutdown(g_seewaves.data_socket_fd, SHUT_RDWR);
     shutdown(g_seewaves.heartbeat_socket_fd, SHUT_RDWR);
-#endif
 
     /* wait for threads to finish */
     if ((err = pthread_join(g_seewaves.data_thread, NULL))) {
@@ -1289,5 +1303,9 @@ int main(int argc, char **argv) {
     /* terminate glfw */
     glfwTerminate();
 
+    if(g_seewaves.verbosity) {
+        fprintf(stdout, "Seewaves exiting\n");
+        fflush(stdout);
+    }
     exit(EXIT_SUCCESS);
 }
