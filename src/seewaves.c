@@ -39,6 +39,7 @@ Usage       : seewaves --help
 #ifdef __APPLE__
 #include <GLUT/glut.h>
 #else
+#include <unistd.h>
 #include <GL/glut.h>
 #endif
 #include <arpa/inet.h>
@@ -1065,11 +1066,10 @@ int display(void) {
     /* does user want grid displayed? */
     if (g_seewaves.view_options & (1 << GRID)) {
     	glPushMatrix();
-    	glRotatef(90.0, 0.0, 0.0, 0.0);
     	render_grid(extent);
-    	glRotatef(-90.0, 1.0, 0.0, 0.0);
+    	glRotatef(90.0, 1.0, 0.0, 0.0);
     	render_grid(extent);
-    	glRotatef(-90.0, 0.0, 1.0, 0.0);
+    	glRotatef(90.0, 0.0, 1.0, 0.0);
     	render_grid(extent);
 
     	glPopMatrix();
