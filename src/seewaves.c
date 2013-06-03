@@ -1271,7 +1271,11 @@ void GLFWCALL on_mouse_button(int button, int action) {
 
 void GLFWCALL on_mouse_wheel(int pos) {
 	/* calculate difference from previous mouse wheel setting */
+#ifdef __APPLE__
+	int diff = g_seewaves.mouse_wheel_pos - pos;
+#else
 	int diff = pos - g_seewaves.mouse_wheel_pos;
+#endif
 	if(diff != 0) {
 		camera_dolly(diff);
 		g_seewaves.mouse_wheel_pos = pos;
