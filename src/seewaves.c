@@ -58,8 +58,15 @@ extern char *optarg;
 #define VERSION_LOW 1
 
 #define DEFAULT_Z_NEAR 0.1
+/*
+glfw mouse wheel behavior currently different in OSX v. Linux, scheduled for
+fix in version 3.0.
+*/
+#ifdef __APPLE__
 #define CAMERA_TRANSLATE_SCALER 0.01
-
+#else
+#define CAMERA_TRANSLATE_SCALER 1.0
+#endif
 #define FONT_GRAY 0.5
 
 typedef enum { HEADS_UP, AXES, GRID } seewaves_view_option_t;
@@ -193,6 +200,7 @@ void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
 		GLfloat center_x, GLfloat center_y, GLfloat center_z);
 void camera_dolly(int units);
 void render_string(GLfloat x, GLfloat y, GLfloat z, char *s);
+void render_grid_sub(float extent, float space);
 void push_ortho(void);
 void pop_ortho(void);
 void render_fading_text(GLfloat x, GLfloat y, GLfloat z, char *s, GLfloat t);
@@ -684,6 +692,8 @@ void camera_reset(void) {
 }
 
 void camera_dolly(int units) {
+    float x, y, z;
+
 	/* scale the requested units */
 	GLfloat scaled_units = units * CAMERA_TRANSLATE_SCALER;
 
@@ -703,9 +713,16 @@ void camera_dolly(int units) {
 	dir_y = dir_y / magnitude;
 	dir_z = dir_z / magnitude;
 
-	g_seewaves.eye[0] = g_seewaves.eye[0] + scaled_units * dir_x;
-	g_seewaves.eye[1] = g_seewaves.eye[1] + scaled_units * dir_y;
-	g_seewaves.eye[2] = g_seewaves.eye[2] + scaled_units * dir_z;
+    /* for now, we're not allowing you to go beyond 0 */
+	x = g_seewaves.eye[0] + scaled_units * dir_x;
+	y = g_seewaves.eye[1] + scaled_units * dir_y;
+	z = g_seewaves.eye[2] + scaled_units * dir_z;
+
+    if((x > 0.0) && (y > 0.0) && (z > 0.0)) {
+	    g_seewaves.eye[0] = g_seewaves.eye[0] + scaled_units * dir_x;
+	    g_seewaves.eye[1] = g_seewaves.eye[1] + scaled_units * dir_y;
+	    g_seewaves.eye[2] = g_seewaves.eye[2] + scaled_units * dir_z;
+    }
 }
 
 /*
@@ -1254,7 +1271,7 @@ void GLFWCALL on_mouse_button(int button, int action) {
 
 void GLFWCALL on_mouse_wheel(int pos) {
 	/* calculate difference from previous mouse wheel setting */
-	int diff = g_seewaves.mouse_wheel_pos - pos;
+	int diff = pos - g_seewaves.mouse_wheel_pos;
 	if(diff != 0) {
 		camera_dolly(diff);
 		g_seewaves.mouse_wheel_pos = pos;
