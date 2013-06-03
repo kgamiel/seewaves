@@ -5,20 +5,25 @@ arch=$(shell uname -m)
 ifeq ($(target_arch), 32)
 	arch=i686
 endif
-IDIR = .
+IDIR=.
 CC=gcc
 ifeq ($(platform), Linux)
 	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
-	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) \
+	-Wstrict-prototypes -Wold-style-definition \
     -D_POSIX_C_SOURCE=200112L -D_BSD_SOURCE
 	LIBS=-lglfw -lGL -lGLU -lm -lpthread -lglut
 else ifeq ($(platform), Darwin)
+	INC=-I/usr/local/include
 	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
-	-Wstrict-prototypes -Wold-style-definition -I$(IDIR) -g -I/usr/local/include
-	LIBS=-L/usr/local/lib -lglfw -framework OpenGL -framework GLUT -framework Foundation -framework Cocoa -framework IOKit
+	-Wstrict-prototypes -Wold-style-definition -g
+	LIBS=-L/usr/local/lib -lglfw -framework OpenGL -framework GLUT \
+	-framework Foundation -framework Cocoa -framework IOKit
 endif
 
 all: seewaves
+
+osx_profile:
+	iprofiler -timeprofiler -allocations -leaks -activitymonitor -systemtrace -d ${HOME}/tmp ./seewaves
 
 ODIR=obj
 LDIR =../lib

@@ -30,7 +30,6 @@ Strategy    : PTP uses User Datagram Protocol (UDP) over Internet Protocol (IP)
 Usage       : seewaves --help
 ============================================================================*/
 #include <stdio.h>
-#include <unistd.h>
 #include <pthread.h>
 #include <string.h>
 #include <stdlib.h>
@@ -43,9 +42,6 @@ Usage       : seewaves --help
 #include <GL/glut.h>
 #endif
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netdb.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -63,7 +59,9 @@ extern char *optarg;
 #define DEFAULT_Z_NEAR 0.1
 #define CAMERA_TRANSLATE_SCALER 0.01
 
-typedef enum { HEADS_UP, AXES } seewaves_view_option_t;
+#define FONT_GRAY 0.5
+
+typedef enum { HEADS_UP, AXES, GRID } seewaves_view_option_t;
 typedef enum { SHIFT } seewaves_key_option_t;
 
 /* Global application data structure */
@@ -102,10 +100,6 @@ typedef struct _seewaves_t {
     int packets_received;
     /* main application loop exit flag */
     int flag_exit_main_loop;
-    /* window width */
-    int win_width;
-    /* window height */
-    int win_height;
     /* local server IP to which to bind */
     char data_host[INET6_ADDRSTRLEN];
     /* local server port number to which to bind */
@@ -130,8 +124,8 @@ typedef struct _seewaves_t {
     int display_mode;
     /* background clear color */
     GLfloat background_color[4];
-    /* viewport dimensions */
-    GLint viewport[4];
+    /* window dimensions */
+    GLint window[4];
     /* most recent timestamp */
     float most_recent_timestamp;
     /* UDP receiver buffer size (optionally set by user) */
@@ -160,6 +154,22 @@ typedef struct _seewaves_t {
     GLfloat camera_theta;
     /* camera spherical (fi) */
     GLfloat camera_phi;
+    /* text to fade */
+    char *fade_text;
+    /* text to fade start time */
+    time_t fade_start;
+    /* how long should the fade last */
+    double fade_duration;
+    /* position of fading text */
+    GLfloat fade_position[3];
+    /* contains range of glLineWidth() values */
+	GLfloat line_width_range[2];
+	/* contains step size for glLineWidth() values */
+	GLfloat line_width_step;
+	/* toolbar viewport dimensions */
+	GLfloat viewport_toolbar[4];
+	/* main viewport dimensions */
+	GLfloat viewport_main[4];
 } seewaves_t;
 
 /* formatting flag */
@@ -176,6 +186,22 @@ void GLFWCALL on_key(int key, int action);
 void GLFWCALL on_resize(int w, int h);
 void util_get_current_time_string(char *buf, ssize_t max_len);
 void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd);
+int util_get_udp_buffer_size(int sd);
+void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
+		GLfloat up_x, GLfloat up_y, GLfloat up_z,
+		GLfloat center_x, GLfloat center_y, GLfloat center_z);
+void camera_dolly(int units);
+void render_string(GLfloat x, GLfloat y, GLfloat z, char *s);
+void push_ortho(void);
+void pop_ortho(void);
+void render_fading_text(GLfloat x, GLfloat y, GLfloat z, char *s, GLfloat t);
+void render_grid(GLfloat extent);
+void opengl_pos_from_mouse_pos(int mx, int my, GLdouble *x, GLdouble *y,
+    GLdouble *z);
+void GLFWCALL on_mouse(int x, int y);
+void GLFWCALL on_mouse_button(int button, int action);
+void GLFWCALL on_mouse_wheel(int pos);
+void GLFWCALL on_char(int key, int action);
 
 /* Global application data variable */
 seewaves_t g_seewaves;
@@ -204,8 +230,8 @@ void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd) {
 	fprintf(fp, "eye:\t\t\t(%2f, %.2f, %.2f)\n", s->eye[0], s->eye[1], s->eye[2]);
 	fprintf(fp, "center:\t\t\t(%2f, %.2f, %.2f)\n", s->center[0], s->center[1], s->center[2]);
 	fprintf(fp, "packets_received:\t%i\n", s->packets_received);
-	fprintf(fp, "win_width:\t\t%i\n", s->win_width);
-	fprintf(fp, "win_height:\t\t%i\n", s->win_height);
+	fprintf(fp, "win_width:\t\t%i\n", s->window[2]);
+	fprintf(fp, "win_height:\t\t%i\n", s->window[3]);
 	fprintf(fp, "data_host:\t\t%s\n", s->data_host);
 	fprintf(fp, "data_port:\t\t%i\n", s->data_port);
 	fprintf(fp, "gpusph_host:\t\t%s\n", s->gpusph_host);
@@ -653,11 +679,7 @@ void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
 Reset the camera position.
 */
 void camera_reset(void) {
-	camera_set_raw(0.0, 0.1, 1.0, 0.0, 1.0, 0.0, 0.8, 0.4, 0.0);
-}
-
-void camera_pan(int units_x, int units_y) {
-
+	camera_set_raw(10.0, 10.0, 15.0, 0.0, 1.0, 0.0, 0.8, 0.0, 0.3);
 }
 
 void camera_dolly(int units) {
@@ -684,9 +706,9 @@ void camera_dolly(int units) {
 	g_seewaves.eye[1] = g_seewaves.eye[1] + scaled_units * dir_y;
 	g_seewaves.eye[2] = g_seewaves.eye[2] + scaled_units * dir_z;
 
-	g_seewaves.center[0] = g_seewaves.center[0] + scaled_units * dir_x;
+	/*g_seewaves.center[0] = g_seewaves.center[0] + scaled_units * dir_x;
 	g_seewaves.center[1] = g_seewaves.center[1] + scaled_units * dir_y;
-	g_seewaves.center[2] = g_seewaves.center[2] + scaled_units * dir_z;
+	g_seewaves.center[2] = g_seewaves.center[2] + scaled_units * dir_z;*/
 }
 
 /*
@@ -719,8 +741,8 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     memset(&g_seewaves, 0, sizeof(seewaves_t));
 
     /* set window to default values */
-    s->win_width = 800;
-    s->win_height = 600;
+    s->window[2] = 800;
+    s->window[3] = 600;
 
     /* default local host, port */
     strcpy(s->data_host, PTP_DEFAULT_CLIENT_HOST);
@@ -745,13 +767,9 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     s->background_color[2] = 1.0f;
     s->background_color[3] = 0.0f;
 
-    g_seewaves.viewport[0] = 0;
-    g_seewaves.viewport[1] = 0;
-    g_seewaves.viewport[2] = g_seewaves.win_width;
-    g_seewaves.viewport[3] = g_seewaves.win_height;
-    
     g_seewaves.view_options |= 1 << HEADS_UP;
     g_seewaves.view_options |= 1 << AXES;
+    g_seewaves.view_options |= 1 << GRID;
 
     g_seewaves.camera_r = 0.000001;
 
@@ -828,6 +846,7 @@ Perform opengl initialization.
 @param s    seewaves pointer
 */
 void initialize_gl(seewaves_t *s) {
+
     /* set background color */
     glClearColor(
         s->background_color[0],
@@ -840,6 +859,14 @@ void initialize_gl(seewaves_t *s) {
 
     /* smooth */
     glShadeModel(GL_SMOOTH);
+
+    glEnable(GL_POINT_SMOOTH);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable (GL_LINE_SMOOTH);
+    glHint (GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+	glGetFloatv(GL_SMOOTH_LINE_WIDTH_RANGE, s->line_width_range);
+	glGetFloatv(GL_SMOOTH_LINE_WIDTH_GRANULARITY, &s->line_width_step);
 }
 
 /*
@@ -873,7 +900,7 @@ void render_string(GLfloat x, GLfloat y, GLfloat z, char *s) {
 	/* loop through all characters */
 	for (i = 0; i < len; i++) {
 		/* render bitmap character */
-		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, s[i]);
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, s[i]);
 	}
 
 	/* restart matrix state */
@@ -890,8 +917,8 @@ void push_ortho(void) {
     /* clear current projection */
     glLoadIdentity();
 	/* switch to orthographic projection */
-    glOrtho(g_seewaves.viewport[0], g_seewaves.viewport[2],
-    		g_seewaves.viewport[1] , g_seewaves.viewport[3], -1, 1);
+    glOrtho(g_seewaves.viewport_main[0], g_seewaves.viewport_main[2],
+    		g_seewaves.viewport_main[1] , g_seewaves.viewport_main[3], -1, 1);
     /* save current modelview */
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
@@ -912,6 +939,59 @@ void pop_ortho(void) {
 	glPopMatrix();
 }
 
+void render_fading_text(GLfloat x, GLfloat y, GLfloat z, char *s, GLfloat t) {
+	time_t now;
+	time(&now);
+	g_seewaves.fade_position[0] = x;
+	g_seewaves.fade_position[1] = y;
+	g_seewaves.fade_position[2] = z;
+	g_seewaves.fade_start = now;
+	g_seewaves.fade_text = strdup(s);
+	g_seewaves.fade_duration = t;
+}
+
+void render_grid(GLfloat extent) {
+	GLfloat color = 0.9;
+	GLfloat grid_large_color = 0.3;
+	GLfloat grid_small_color = 0.8;
+	GLfloat x, y;
+	glColor3f(color, color, color);
+	glBegin(GL_LINES);
+	/* Draw smaller grid cells */
+	glColor3f(grid_small_color, grid_small_color, grid_small_color);
+	for(x = 0.0; x < extent; x += 1.0) {
+		if(((int)x % 10) == 0) {
+			continue;
+		}
+		glVertex3f(x, 0.0, 0.0);
+		glVertex3f(x, extent, 0.0);
+	}
+	for(y = 0.0; y < extent; y += 1.0) {
+		if(((int)y % 10) == 0) {
+			continue;
+		}
+		glVertex3f(0.0, y, 0.0);
+		glVertex3f(extent, y, 0.0);
+	}
+	/* Draw large grid cells */
+	glColor3f(grid_large_color, grid_large_color, grid_large_color);
+	for(x = 0.0; x < extent; x += 10.0) {
+		if((g_seewaves.view_options & (1 << AXES)) && (x == 0)) {
+			continue;
+		}
+		glVertex3f(x, 0.0, 0.0);
+		glVertex3f(x, extent, 0.0);
+	}
+	for(y = 0.0; y < extent; y += 10.0) {
+		if((g_seewaves.view_options & (1 << AXES)) && (y == 0)) {
+			continue;
+		}
+		glVertex3f(0.0, y, 0.0);
+		glVertex3f(extent, y, 0.0);
+	}
+	glEnd();
+}
+
 /*
 Called from main loop to render the scene.
 
@@ -922,6 +1002,27 @@ int display(void) {
     int err;
     /* loop iterator */
     unsigned int i;
+    /* world extent */
+	GLfloat extent = 100;
+    GLint m_viewport[4];
+
+	/* setup viewport for this rendering */
+	glViewport(g_seewaves.viewport_main[0], g_seewaves.viewport_main[1],
+    		g_seewaves.viewport_main[2], g_seewaves.viewport_main[3]);
+
+	glGetIntegerv( GL_VIEWPORT, m_viewport );
+
+	/* setup projection for this viewport */
+	glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    g_seewaves.z_near = DEFAULT_Z_NEAR;
+    g_seewaves.z_far = 10000.0 * g_seewaves.z_near;
+    gluPerspective(82.5, g_seewaves.viewport_main[2] / g_seewaves.viewport_main[3],
+    		g_seewaves.z_near, g_seewaves.z_far);
+
+    /* prepare for modeling and viewing transforms */
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
 
     /* try to lock shared data */
     if ((err = pthread_mutex_trylock(&g_seewaves.lock))) {
@@ -951,51 +1052,53 @@ int display(void) {
         g_seewaves.up[2]);
 
     glPointSize(1.0f);
+	glLineWidth(g_seewaves.line_width_range[0]);
 
     push_ortho();
     glBegin(GL_LINES);
     glColor3f(0.0, 0.0, 0.0);
-    glVertex2i(g_seewaves.mouse_x, g_seewaves.viewport[3] - g_seewaves.mouse_y);
-    glVertex2i(g_seewaves.mouse_x+10, g_seewaves.viewport[3] - g_seewaves.mouse_y);
+    glVertex2i(g_seewaves.mouse_x, g_seewaves.viewport_main[3] - g_seewaves.mouse_y);
+    glVertex2i(g_seewaves.mouse_x+10, g_seewaves.viewport_main[3] - g_seewaves.mouse_y);
     glEnd();
     pop_ortho();
+
+    /* does user want grid displayed? */
+    if (g_seewaves.view_options & (1 << GRID)) {
+    	glPushMatrix();
+    	glRotatef(90.0, 0.0, 0.0, 0.0);
+    	render_grid(extent);
+    	glRotatef(-90.0, 1.0, 0.0, 0.0);
+    	render_grid(extent);
+    	glRotatef(-90.0, 0.0, 1.0, 0.0);
+    	render_grid(extent);
+
+    	glPopMatrix();
+    }
 
     /* does user want axes displayed? */
     if (g_seewaves.view_options & (1 << AXES)) {
 		/* we display negative axes slightly darker */
-		GLfloat dark_value = 0.6;
-		glLineWidth(3.0);
     	glBegin(GL_LINES);
     		/* x axis */
     		glColor3f(1.0, 0.0, 0.0);
 			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(1000.0, 0.0, 0.0);
-			glColor3f(dark_value, 0.0, 0.0);
-			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(-1000.0, 0.0, 0.0);
+			glVertex3f(extent, 0.0, 0.0);
 
 			/* y axis (rotated to match model) */
 			glColor3f(0.0, 0.0, 1.0);
 			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(0.0, 1000.0, 0.0);
-			glColor3f(0.0, 0.0, dark_value);
-			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(0.0, -1000.0, 0.0);
+			glVertex3f(0.0, extent, 0.0);
 
 			/* z axis (rotated to match model) */
 			glColor3f(0.0, 1.0, 0.0);
 			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(0.0, 0.0, 1000.0);
-			glColor3f(0.0, dark_value, 0.0);
-			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(0.0, 0.0, -1000.0);
-
+			glVertex3f(0.0, 0.0, extent);
 		glEnd();
 		glLineWidth(1.0);
 		glPushMatrix();
 		glColor3f(0.0, 0.0, 0.0);
 		glTranslatef(g_seewaves.center[0], g_seewaves.center[1], g_seewaves.center[2]);
-		glutWireSphere(0.1, 10.0, 10.0);
+		/*glutWireSphere(0.1, 10.0, 10.0);*/
 		glPopMatrix();
     }
 
@@ -1011,13 +1114,12 @@ int display(void) {
     if (g_seewaves.view_options & (1 << HEADS_UP)) {
         /* status message buffer */
         char status_msg[1024];
-        GLfloat gray = 0.5;
         GLfloat y_inc = 20.0f;
         GLfloat y = 10.0f;
         GLfloat x = 10.0f;
 
         /* set font color */
-        glColor3f(gray, gray, gray);
+        glColor3f(FONT_GRAY, FONT_GRAY, FONT_GRAY);
 
     	/* switch to ortho mode */
     	push_ortho();
@@ -1053,6 +1155,35 @@ int display(void) {
         fprintf(stderr, "Error unlocking mutex: %i\n", err);
     }
 
+    /* handle fading text */
+    if(g_seewaves.fade_start != 0) {
+    	double diff;
+    	double fade_duration = 0.5;
+    	time_t now;
+    	time(&now);
+    	/* gettimeofday to get ms resolution */
+    	diff = difftime(now, g_seewaves.fade_start);
+    	if(diff >= g_seewaves.fade_duration) {
+    		g_seewaves.fade_start = 0;
+    		free(g_seewaves.fade_text);
+    		g_seewaves.fade_duration = 0.0;
+    	} else if((g_seewaves.fade_duration - diff) <= fade_duration) {
+    		/* fade */
+    		printf("will fade here\n");fflush(stdout);
+    	} else {
+            /* set font color */
+            glColor3f(FONT_GRAY, FONT_GRAY, FONT_GRAY);
+
+        	/* switch to ortho mode */
+        	push_ortho();
+
+        	render_string(g_seewaves.fade_position[0], g_seewaves.fade_position[1],
+        			g_seewaves.fade_position[2], g_seewaves.fade_text);
+
+        	pop_ortho();
+    	}
+    }
+
     /* check for OpenGL errors*/
     while((err = glGetError()) != GL_NO_ERROR) {
     	fprintf(stderr, "OpenGL error: %s\n", gluErrorString(err));
@@ -1061,7 +1192,8 @@ int display(void) {
     return(1);
 }
 
-void opengl_pos_from_mouse_pos(int mx, int my, GLdouble *x, GLdouble *y, GLdouble *z) {
+void opengl_pos_from_mouse_pos(int mx, int my, GLdouble *x, GLdouble *y,
+GLdouble *z) {
     GLint viewport[4];
     GLdouble modelview[16];
     GLdouble projection[16];
@@ -1088,7 +1220,7 @@ void GLFWCALL on_mouse(int x, int y) {
 		/* if any difference, pan */
 		if((diff_x != 0) || (diff_y != 0)) {
 			printf("pressed, panning ");
-			camera_pan(diff_x, diff_y);
+			/*camera_pan(diff_x, diff_y);*/
 		}
 	} else {
 		GLdouble ogl_x, ogl_y, ogl_z;
@@ -1143,7 +1275,19 @@ void GLFWCALL on_key(int key, int action) {
     }
 }
 
+/*
+Callback when a character key is pressed or released.
+Note, on OSX, action is always GLFW_PRESS and function only called on press
+whereas glfwSetKeyCallback() behaves as expected.
+
+@param  key Key code
+@param	action	Either GLFW_RELEASE or GLFW_PRESS (see note above)
+*/
 void GLFWCALL on_char(int key, int action) {
+	/* eliminate compiler warning since we don't use action */
+	(void)action;
+
+	/* which key was pressed? */
     switch(key) {
         case GLFW_KEY_ESC:
         case 'q':
@@ -1184,9 +1328,16 @@ void GLFWCALL on_char(int key, int action) {
         }
         case 'c': {
         	/* cycle through camera/view modes */
+        	render_fading_text(10.0, g_seewaves.viewport_main[3] - 40.0, 0.5,
+                "Hello, world!", 2.0);
+        	break;
         }
         case 'a': {
         	g_seewaves.view_options ^= 1 << AXES;
+        	break;
+        }
+        case 'g': {
+        	g_seewaves.view_options ^= 1 << GRID;
         	break;
         }
         default:
@@ -1195,23 +1346,28 @@ void GLFWCALL on_char(int key, int action) {
     }
 }
 
+/*
+Called on window resize event.
+Recalculates all dependencies.
+
+@param	w	new width
+@param	h	new height
+*/
 void on_resize(int w, int h) {
-	/* setup our "camera" */
-    glViewport(0, 0, w, h);
-    g_seewaves.viewport[0] = 0;
-    g_seewaves.viewport[1] = 0;
-    g_seewaves.viewport[2] = w;
-    g_seewaves.viewport[3] = h;
+	/* cache the new window size internally */
+	g_seewaves.window[2] = w;
+	g_seewaves.window[3] = h;
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    g_seewaves.z_near = DEFAULT_Z_NEAR;
-    g_seewaves.z_far = 10000.0 * g_seewaves.z_near;
-    gluPerspective(82.5, (GLfloat)w / (GLfloat)h, g_seewaves.z_near, g_seewaves.z_far);
+	/* recalculate viewport sizes */
+    g_seewaves.viewport_main[0] = 0;
+    g_seewaves.viewport_main[1] = 0;
+    g_seewaves.viewport_main[2] = w;
+    g_seewaves.viewport_main[3] = h - 50.0;
 
-    /* prepare for modeling and viewing transforms */
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    g_seewaves.viewport_toolbar[0] = 0;
+    g_seewaves.viewport_toolbar[1] = h - 50.0;
+    g_seewaves.viewport_toolbar[2] = w;
+    g_seewaves.viewport_toolbar[3] = 50.0;
 }
 
 int main(int argc, char **argv) {
@@ -1232,8 +1388,8 @@ int main(int argc, char **argv) {
     }
 
     /* open the GL window */
-    if (!glfwOpenWindow(g_seewaves.win_width,
-        g_seewaves.win_height,
+    if (!glfwOpenWindow(g_seewaves.window[2],
+        g_seewaves.window[3],
         g_seewaves.red_bits,
         g_seewaves.green_bits,
         g_seewaves.blue_bits,
