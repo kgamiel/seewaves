@@ -680,7 +680,7 @@ void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
 Reset the camera position.
 */
 void camera_reset(void) {
-	camera_set_raw(10.0, 10.0, 15.0, 0.0, 1.0, 0.0, 0.8, 0.0, 0.3);
+	camera_set_raw(5.0, 5.0, 5.0, 0.0, 1.0, 0.0, 0.8, 0.3, 0.0);
 }
 
 void camera_dolly(int units) {
@@ -701,15 +701,11 @@ void camera_dolly(int units) {
 	/* make unit vector */
 	dir_x = dir_x / magnitude;
 	dir_y = dir_y / magnitude;
-	dir_y = dir_y / magnitude;
+	dir_z = dir_z / magnitude;
 
 	g_seewaves.eye[0] = g_seewaves.eye[0] + scaled_units * dir_x;
 	g_seewaves.eye[1] = g_seewaves.eye[1] + scaled_units * dir_y;
 	g_seewaves.eye[2] = g_seewaves.eye[2] + scaled_units * dir_z;
-
-	/*g_seewaves.center[0] = g_seewaves.center[0] + scaled_units * dir_x;
-	g_seewaves.center[1] = g_seewaves.center[1] + scaled_units * dir_y;
-	g_seewaves.center[2] = g_seewaves.center[2] + scaled_units * dir_z;*/
 }
 
 /*
@@ -951,45 +947,59 @@ void render_fading_text(GLfloat x, GLfloat y, GLfloat z, char *s, GLfloat t) {
 	g_seewaves.fade_duration = t;
 }
 
+void render_grid_sub(float extent, float space) {
+	float threshold = 0.000009;
+	float result;
+	float x;
+	float y;
+	int count = (int)(extent/space);
+	int i;
+	for(i = 0; i < count; i++) {
+		x = space * i;
+		errno = 0;
+		result = fmodf(x, space * 10.0);
+		if(errno) {
+			perror("fmodf");
+			continue;
+		}
+		if(result < threshold) {
+			continue;
+		}
+		glVertex3f(x, 0.0, 0.0);
+		glVertex3f(x, extent, 0.0);
+	}
+	for(i = 0; i < count; i++) {
+		y = space * i;
+		errno = 0;
+		result = fmodf(y, space * 10.0);
+		if(errno) {
+			perror("fmodf");
+			continue;
+		}
+		if(result < threshold) {
+			continue;
+		}
+		glVertex3f(0.0, y, 0.0);
+		glVertex3f(extent, y, 0.0);
+	}
+}
+
 void render_grid(GLfloat extent) {
 	GLfloat color = 0.9;
-	GLfloat grid_large_color = 0.3;
-	GLfloat grid_small_color = 0.8;
-	GLfloat x, y;
+	GLfloat grid_large_color = 0.7;
+	GLfloat grid_medium_color = 0.8;
+	GLfloat grid_small_color = 0.9;
 	glColor3f(color, color, color);
 	glBegin(GL_LINES);
 	/* Draw smaller grid cells */
 	glColor3f(grid_small_color, grid_small_color, grid_small_color);
-	for(x = 0.0; x < extent; x += 1.0) {
-		if(((int)x % 10) == 0) {
-			continue;
-		}
-		glVertex3f(x, 0.0, 0.0);
-		glVertex3f(x, extent, 0.0);
-	}
-	for(y = 0.0; y < extent; y += 1.0) {
-		if(((int)y % 10) == 0) {
-			continue;
-		}
-		glVertex3f(0.0, y, 0.0);
-		glVertex3f(extent, y, 0.0);
-	}
+	render_grid_sub(extent, 0.1);
+	/* Draw medium grid cells */
+	glColor3f(grid_medium_color, grid_medium_color, grid_medium_color);
+	render_grid_sub(extent, 1.0);
 	/* Draw large grid cells */
 	glColor3f(grid_large_color, grid_large_color, grid_large_color);
-	for(x = 0.0; x < extent; x += 10.0) {
-		if((g_seewaves.view_options & (1 << AXES)) && (x == 0)) {
-			continue;
-		}
-		glVertex3f(x, 0.0, 0.0);
-		glVertex3f(x, extent, 0.0);
-	}
-	for(y = 0.0; y < extent; y += 10.0) {
-		if((g_seewaves.view_options & (1 << AXES)) && (y == 0)) {
-			continue;
-		}
-		glVertex3f(0.0, y, 0.0);
-		glVertex3f(extent, y, 0.0);
-	}
+	render_grid_sub(extent, 10.0);
 	glEnd();
 }
 
@@ -1055,6 +1065,7 @@ int display(void) {
     glPointSize(1.0f);
 	glLineWidth(g_seewaves.line_width_range[0]);
 
+	/*
     push_ortho();
     glBegin(GL_LINES);
     glColor3f(0.0, 0.0, 0.0);
@@ -1062,6 +1073,7 @@ int display(void) {
     glVertex2i(g_seewaves.mouse_x+10, g_seewaves.viewport_main[3] - g_seewaves.mouse_y);
     glEnd();
     pop_ortho();
+	*/
 
     /* does user want grid displayed? */
     if (g_seewaves.view_options & (1 << GRID)) {
@@ -1094,7 +1106,6 @@ int display(void) {
 			glVertex3f(0.0, 0.0, 0.0);
 			glVertex3f(0.0, 0.0, extent);
 		glEnd();
-		glLineWidth(1.0);
 		glPushMatrix();
 		glColor3f(0.0, 0.0, 0.0);
 		glTranslatef(g_seewaves.center[0], g_seewaves.center[1], g_seewaves.center[2]);

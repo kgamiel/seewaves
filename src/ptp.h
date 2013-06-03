@@ -10,7 +10,7 @@
 
 /* in preliminary testing, 4 gives good performance */
 #define PTP_PARTICLES_PER_PACKET 4
-#define PTP_HEARTBEAT_TTL_S 5
+#define PTP_HEARTBEAT_TTL_S 1
 #define PTP_DEFAULT_CLIENT_PORT 50000
 #define PTP_DEFAULT_SERVER_PORT 50001
 #define PTP_DEFAULT_SERVER_HOST "127.0.0.1"
