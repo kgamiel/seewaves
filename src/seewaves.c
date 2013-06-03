@@ -55,7 +55,7 @@ extern char *optarg;
 
 /* Versioning */
 #define VERSION_HIGH 0
-#define VERSION_LOW 1
+#define VERSION_LOW 11
 
 #define DEFAULT_Z_NEAR 0.1
 /*
