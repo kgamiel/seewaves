@@ -18,7 +18,7 @@
 
 typedef struct __attribute__ ((packed)) {
     unsigned int id;
-    unsigned char flag;
+    short flag;
     float position[4];
 } ptp_particle_data_t;
 
@@ -26,6 +26,8 @@ typedef struct __attribute__ ((packed)) {
     unsigned int total_particle_count;
     unsigned int particle_count;
     float t;
+    float world_origin[3];
+    float world_size[3];
     ptp_particle_data_t data[PTP_PARTICLES_PER_PACKET];
 } ptp_packet_t;
 

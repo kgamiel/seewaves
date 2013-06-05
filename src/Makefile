@@ -6,16 +6,16 @@ ifeq ($(target_arch), 32)
 	arch=i686
 endif
 IDIR=.
-CC=gcc
+CC=gcc 
 ifeq ($(platform), Linux)
-	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
+	CFLAGS=-Wall -Wextra -std=c99 -pedantic -Wmissing-prototypes \
 	-Wstrict-prototypes -Wold-style-definition \
     -D_POSIX_C_SOURCE=200112L -D_BSD_SOURCE
 	LIBS=-lglfw -lGL -lGLU -lm -lpthread -lglut
 else ifeq ($(platform), Darwin)
 	INC=-I/usr/local/include
-	CFLAGS=-Wall -Wextra -std=c89 -pedantic -Wmissing-prototypes \
-	-Wstrict-prototypes -Wold-style-definition -g
+	CFLAGS=-Wall -Wextra -std=c99 -pedantic -Wmissing-prototypes \
+	-Wstrict-prototypes -Wold-style-definition -O3 #-g
 	LIBS=-L/usr/local/lib -lglfw -framework OpenGL -framework GLUT \
 	-framework Foundation -framework Cocoa -framework IOKit
 endif
@@ -29,10 +29,10 @@ ODIR=obj
 LDIR =../lib
 
 
-_DEPS = ptp.h
+_DEPS = ptp.h cfg.h
 DEPS = $(patsubst %,$(IDIR)/%,$(_DEPS))
 
-_OBJ = seewaves.o
+_OBJ = seewaves.o cfg.o
 OBJ = $(patsubst %,$(ODIR)/%,$(_OBJ))
 
 $(ODIR)/%.o: %.c $(DEPS)

@@ -33,7 +33,9 @@ Usage       : seewaves --help
 #include <pthread.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <float.h>
 #include <math.h>
 #include "GL/glfw.h"
 #ifdef __APPLE__
@@ -49,15 +51,17 @@ Usage       : seewaves --help
 #include <getopt.h>
 #include <assert.h>
 #include "ptp.h"
+#include "cfg.h"
 
 /* External variables */
 extern char *optarg;
 
 /* Versioning */
 #define VERSION_HIGH 0
-#define VERSION_LOW 11
+#define VERSION_LOW 12
 
-#define DEFAULT_Z_NEAR 0.1
+#define UNDEFINED_PARTICLE -1.0
+
 /*
 glfw mouse wheel behavior currently different in OSX v. Linux, scheduled for
 fix in version 3.0.
@@ -69,11 +73,39 @@ fix in version 3.0.
 #endif
 #define FONT_GRAY 0.5
 
-typedef enum { HEADS_UP, AXES, GRID } seewaves_view_option_t;
+typedef enum { HEADS_UP, AXES, GRID, ROTATION_AXES } seewaves_view_option_t;
 typedef enum { SHIFT } seewaves_key_option_t;
 
+/* define all application configuration settings here */
+#define CFG_WIN_TITLE	"window.title"
+#define CFG_WIN_X		"window.x"
+#define CFG_WIN_Y		"window.y"
+#define CFG_WIN_WIDTH	"window.width"
+#define CFG_WIN_HEIGHT	"window.height"
+#define CFG_EYE_POS		"eye.position"
+#define CFG_EYE_UP		"eye.up"
+#define CFG_EYE_TARGET	"eye.target"
+#define CFG_ZNEAR		"znear"
+#define CFG_ZFAR		"zfar"
+
+cfg_option_t g_config_options[] = {
+		{ CFG_WIN_TITLE, "Main window title",      STRING,  { ""      }, { "Seewaves" } },
+		{ CFG_WIN_X,     "Main window X position", INTEGER, { .ival=0 }, { .ival=100  } },
+		{ CFG_WIN_Y,     "Main window Y position", INTEGER, { .ival=0 }, { .ival=100  } },
+		{ CFG_WIN_WIDTH, "Main window width",      INTEGER, { .ival=0 }, { .ival=800  } },
+		{ CFG_WIN_HEIGHT,"Main window height",     INTEGER, { .ival=0 }, { .ival=600  } },
+		{ CFG_EYE_POS,   "Eye position",           FLOAT3,  { .ival=0 }, { .f3val = { 1.0, 1.0, 1.0 } } },
+		{ CFG_EYE_UP,    "Eye up vector",          FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 1.0 } } },
+		{ CFG_EYE_TARGET,"Eye target position",    FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 0.0 } } },
+		{ CFG_ZNEAR,     "Z near",                 FLOAT,   { .fval=0 }, { .fval=0.1  } },
+		{ CFG_ZFAR,      "Z far",                  FLOAT,   { .fval=0 }, { .fval=10000.0  } },
+		{ NULL,          NULL,                     0,       { ""      }, { NULL       } }
+};
+
 /* Global application data structure */
-typedef struct _seewaves_t {
+typedef struct {
+	/* configuration */
+	cfg_t config;
 	/* verbosity */
 	int verbosity;
     /* heartbeat thread, sends packets to server */
@@ -98,12 +130,10 @@ typedef struct _seewaves_t {
     float *z;
     /* array of w (mass) of all particles, total_particle_cnt long */
     float *w;
-    /* eye (camera) position */
-    float eye[3];
-    /* eye (camera) up vector */
-    float up[3];
-    /* eye (camera) target position */
-    float center[3];
+    /* array of t (timestamp) of all particles, total_particle_cnt long */
+    float *t;
+    /* particle flag */
+    unsigned int *flag;
     /* total number of packets received from server */
     int packets_received;
     /* main application loop exit flag */
@@ -136,14 +166,12 @@ typedef struct _seewaves_t {
     GLint window[4];
     /* most recent timestamp */
     float most_recent_timestamp;
+    /* total timesteps */
+    int total_timesteps;
     /* UDP receiver buffer size (optionally set by user) */
     int udp_buffer_size;
     /* view options bit string */
     unsigned char view_options;
-    /* z near */
-    GLfloat z_near;
-    /* z far */
-    GLfloat z_far;
     /* mouse x position */
     int mouse_x;
     /* mouse y position */
@@ -156,12 +184,6 @@ typedef struct _seewaves_t {
     int mouse_wheel_pos;
     /* key options */
     unsigned char key_options;
-    /* camera spherical (r) */
-    GLfloat camera_r;
-    /* camera spherical (theta) */
-    GLfloat camera_theta;
-    /* camera spherical (fi) */
-    GLfloat camera_phi;
     /* text to fade */
     char *fade_text;
     /* text to fade start time */
@@ -174,10 +196,26 @@ typedef struct _seewaves_t {
 	GLfloat line_width_range[2];
 	/* contains step size for glLineWidth() values */
 	GLfloat line_width_step;
+    /* contains range of glPointSize() values */
+	GLfloat point_size_range[2];
+	/* contains step size for glPointSize() values */
+	GLfloat point_size_step;
 	/* toolbar viewport dimensions */
 	GLfloat viewport_toolbar[4];
 	/* main viewport dimensions */
 	GLfloat viewport_main[4];
+	/* center of rotation */
+	float rotation_center[3];
+	/* origin of world */
+	float world_origin[3];
+	/* size of world */
+	float world_size[3];
+	/* mouse pointer location when clicked */
+	int mouse_pressed_at[2];
+	/* model rotation */
+	float model_rotation[3];
+	/* model pan */
+	float model_pan[3];
 } seewaves_t;
 
 /* formatting flag */
@@ -197,7 +235,7 @@ void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd);
 int util_get_udp_buffer_size(int sd);
 void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
 		GLfloat up_x, GLfloat up_y, GLfloat up_z,
-		GLfloat center_x, GLfloat center_y, GLfloat center_z);
+		GLfloat target_x, GLfloat target_y, GLfloat target_z);
 void camera_dolly(int units);
 void render_string(GLfloat x, GLfloat y, GLfloat z, char *s);
 void render_grid_sub(float extent, float space);
@@ -211,6 +249,17 @@ void GLFWCALL on_mouse(int x, int y);
 void GLFWCALL on_mouse_button(int button, int action);
 void GLFWCALL on_mouse_wheel(int pos);
 void GLFWCALL on_char(int key, int action);
+int get_int(char *name);
+float get_float(char *name);
+char *get_string(char *name);
+int application_reconfigure(seewaves_t *s, const char *dirname,
+    const char *filename, int create);
+void cfg_print(FILE *fp);
+float *get_float3(char *name, float *value);
+void set_float3(char *name, float x, float y, float z);
+const char *byte_to_binary(int x);
+void render_axes(float x, float y, float z, float length);
+void render_box(float origin[3], float size[3]);
 
 /* Global application data variable */
 seewaves_t g_seewaves;
@@ -228,6 +277,7 @@ Print structure information.
 @param	fd	File descriptor
 */
 void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd) {
+	float fv[3];
 	FILE *fp = fdopen(fd, "w+");
 	if(fp == NULL) {
 		perror("util_print_seewaves");
@@ -236,11 +286,13 @@ void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd) {
 	fprintf(fp, "verbosity:\t\t%i\n", s->verbosity);
 	fprintf(fp, "heartbeats_sent:\t%i\n", s->heartbeats_sent);
 	fprintf(fp, "total_particle_count:\t%i\n", s->total_particle_count);
-	fprintf(fp, "eye:\t\t\t(%2f, %.2f, %.2f)\n", s->eye[0], s->eye[1], s->eye[2]);
-	fprintf(fp, "center:\t\t\t(%2f, %.2f, %.2f)\n", s->center[0], s->center[1], s->center[2]);
+	get_float3(CFG_EYE_POS, fv);
+	fprintf(fp, "eye:\t\t\t(%2f, %.2f, %.2f)\n", fv[0], fv[1], fv[2]);
+	get_float3(CFG_EYE_TARGET, fv);
+	fprintf(fp, "target:\t\t\t(%2f, %.2f, %.2f)\n", fv[0], fv[1], fv[2]);
 	fprintf(fp, "packets_received:\t%i\n", s->packets_received);
-	fprintf(fp, "win_width:\t\t%i\n", s->window[2]);
-	fprintf(fp, "win_height:\t\t%i\n", s->window[3]);
+	fprintf(fp, "win_width:\t\t%i\n", get_int(CFG_WIN_WIDTH));
+	fprintf(fp, "win_height:\t\t%i\n", get_int(CFG_WIN_HEIGHT));
 	fprintf(fp, "data_host:\t\t%s\n", s->data_host);
 	fprintf(fp, "data_port:\t\t%i\n", s->data_port);
 	fprintf(fp, "gpusph_host:\t\t%s\n", s->gpusph_host);
@@ -294,6 +346,7 @@ void util_get_current_time_string(char *buf, ssize_t max_len) {
 	timeinfo = localtime(&now);
 	strftime(buf, max_len, "%m-%d-%Y_%X", timeinfo);
 }
+
 /*
 Heartbeat thread loop.
 This function is the main loop for the heartbeat thread.  It sends heartbeat
@@ -454,6 +507,16 @@ void *heartbeat_thread_main(void *user_data) {
     /* we're done */
     return(NULL);
 }
+const char *byte_to_binary(int x) {
+    static char b[9];
+    b[0] = '\0';
+
+    int z;
+    for (z = 128; z > 0; z >>= 1) {
+        strcat(b, ((x & z) == z) ? "1" : "0");
+    }
+    return(b);
+}
 
 /*
 Data thread loop.  This function is the main loop for the data thread.
@@ -573,14 +636,15 @@ void *data_thread_main(void *user_data) {
                 if ((err = pthread_mutex_trylock(&sw->lock)) == 0) {
                     /* got the lock */
                     unsigned int particle = 0;
-
                     /* exit loop flag */
                     locked++;
 
-                    /* keep most recent timestamp */
-                    sw->most_recent_timestamp = packet.t >
-                        sw->most_recent_timestamp ? packet.t :
-                        sw->most_recent_timestamp;
+                    /* KAG - fix me, should be list, they can be out-of-order
+                     * keep most recent timestamp */
+                    if(packet.t > sw->most_recent_timestamp) {
+                    	sw->most_recent_timestamp = packet.t;
+                    	sw->total_timesteps++;
+                    }
 
                     /* keep track of packet count received */
                     sw->packets_received++;
@@ -592,6 +656,8 @@ void *data_thread_main(void *user_data) {
                             free(sw->x);
                             free(sw->y);
                             free(sw->z);
+                            free(sw->flag);
+                            free(sw->t);
                         }
                         sw->x = (float*)calloc(packet.total_particle_count,
                             sizeof(float));
@@ -599,6 +665,16 @@ void *data_thread_main(void *user_data) {
                             sizeof(float));
                         sw->z = (float*)calloc(packet.total_particle_count,
                             sizeof(float));
+                        sw->flag = (unsigned int*)calloc(packet.total_particle_count,
+                            sizeof(unsigned int));
+                        sw->t = (float*)calloc(packet.total_particle_count,
+                            sizeof(float));
+                        for(particle = 0; particle < packet.total_particle_count;particle++) {
+                        	sw->x[particle] = UNDEFINED_PARTICLE;
+                        }
+                        sw->rotation_center[0] = UNDEFINED_PARTICLE;
+                        memcpy(sw->world_origin, packet.world_origin, sizeof(packet.world_origin));
+                        memcpy(sw->world_size, packet.world_size, sizeof(packet.world_size));
                     }
 
                     /* save total number of particles in model */
@@ -608,12 +684,18 @@ void *data_thread_main(void *user_data) {
                     for(; particle < packet.particle_count; particle++) {
                         /* get particle id */
                         unsigned int id = packet.data[particle].id;
-
                         /* set x, y, z and w */
+                        sw->t[id] = packet.t;
                         sw->x[id] = packet.data[particle].position[0];
                         sw->y[id] = packet.data[particle].position[1];
                         sw->z[id] = packet.data[particle].position[2];
                         /*sw->w[id] = packet.data[particle].position[2];*/
+                        sw->flag[id] = packet.data[particle].flag;
+                    }
+                    if(sw->rotation_center[0] == UNDEFINED_PARTICLE) {
+                    	sw->rotation_center[0] = sw->world_origin[0] + sw->world_size[0] / 2.0;
+                    	sw->rotation_center[1] = sw->world_origin[2] + sw->world_size[2] / 2.0;
+                    	sw->rotation_center[2] = sw->world_origin[1] + sw->world_size[1] / 2.0;
                     }
 
                     /* Release the lock */
@@ -672,27 +754,38 @@ Set the camera position.
 */
 void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
 		GLfloat up_x, GLfloat up_y, GLfloat up_z,
-		GLfloat center_x, GLfloat center_y, GLfloat center_z) {
-    g_seewaves.eye[0] = eye_x;
-    g_seewaves.eye[1] = eye_y;
-    g_seewaves.eye[2] = eye_z;
-    g_seewaves.up[0] = up_x;
-    g_seewaves.up[1] = up_y;
-    g_seewaves.up[2] = up_z;
-    g_seewaves.center[0] = center_x;
-    g_seewaves.center[1] = center_y;
-    g_seewaves.center[2] = center_z;
+		GLfloat target_x, GLfloat target_y, GLfloat target_z) {
+    set_float3(CFG_EYE_POS, eye_x, eye_y, eye_z);
+    set_float3(CFG_EYE_UP, up_x, up_y, up_z);
+    set_float3(CFG_EYE_TARGET, target_x, target_y, target_z);
 }
 
 /*
 Reset the camera position.
 */
 void camera_reset(void) {
-	camera_set_raw(5.0, 5.0, 5.0, 0.0, 1.0, 0.0, 0.8, 0.3, 0.0);
+	static int first = 1;
+    static float eye[3];
+    static float target[3];
+
+    g_seewaves.model_pan[0] = 0.0;
+	g_seewaves.model_pan[1] = 0.0;
+
+    if(first) {
+    	get_float3(CFG_EYE_POS, eye);
+    	get_float3(CFG_EYE_TARGET, target);
+        set_float3(CFG_EYE_POS, eye[0], eye[1], eye[2]);
+        set_float3(CFG_EYE_TARGET, target[0], target[1], target[2]);
+    	first = 0;
+    }
+	camera_set_raw(eye[0], eye[1], eye[2], 0.0, 1.0, 0.0, target[0], target[1], target[2]);
 }
 
 void camera_dolly(int units) {
     float x, y, z;
+    GLfloat dir_x, dir_y, dir_z;
+    float eye[3];
+    float target[3];
 
 	/* scale the requested units */
 	GLfloat scaled_units = units * CAMERA_TRANSLATE_SCALER;
@@ -701,9 +794,11 @@ void camera_dolly(int units) {
 	GLfloat magnitude;
 
 	/* find vector from eye to center */
-	GLfloat dir_x = g_seewaves.center[0] - g_seewaves.eye[0];
-	GLfloat dir_y = g_seewaves.center[1] - g_seewaves.eye[1];
-	GLfloat dir_z = g_seewaves.center[2] - g_seewaves.eye[2];
+	get_float3(CFG_EYE_POS, eye);
+	get_float3(CFG_EYE_TARGET, target);
+	dir_x = target[0] - eye[0];
+	dir_y = target[1] - eye[1];
+	dir_z = target[2] - eye[2];
 
 	/* find magnitude of the dolly move */
 	magnitude = sqrt((dir_x * dir_x) + (dir_y * dir_y) + (dir_z * dir_z));
@@ -713,16 +808,171 @@ void camera_dolly(int units) {
 	dir_y = dir_y / magnitude;
 	dir_z = dir_z / magnitude;
 
-    /* for now, we're not allowing you to go beyond 0 */
-	x = g_seewaves.eye[0] + scaled_units * dir_x;
-	y = g_seewaves.eye[1] + scaled_units * dir_y;
-	z = g_seewaves.eye[2] + scaled_units * dir_z;
+	x = eye[0] + scaled_units * dir_x;
+	y = eye[1] + scaled_units * dir_y;
+	z = eye[2] + scaled_units * dir_z;
 
-    if((x > 0.0) && (y > 0.0) && (z > 0.0)) {
-	    g_seewaves.eye[0] = g_seewaves.eye[0] + scaled_units * dir_x;
-	    g_seewaves.eye[1] = g_seewaves.eye[1] + scaled_units * dir_y;
-	    g_seewaves.eye[2] = g_seewaves.eye[2] + scaled_units * dir_z;
-    }
+    set_float3(CFG_EYE_POS, x, y, z);
+}
+
+void cfg_print(FILE *fp) {
+	cfg_option_t *option;
+	int i;
+	for( i = 0; ; i++) {
+		option = &(g_config_options[i]);
+		if(option->name == NULL) {
+			break;
+		}
+		fprintf(fp, "# %s\n%s ", option->description, option->name);
+		switch(option->which) {
+		case STRING: {
+			fprintf(fp, "%s\n\n", option->d.sval);
+			break;
+		}
+		case INTEGER: {
+			fprintf(fp, "%i\n\n", option->d.ival);
+			break;
+		}
+		case FLOAT: {
+			fprintf(fp, "%.12f\n\n", option->d.fval);
+			break;
+		}
+		case FLOAT3: {
+			fprintf(fp, "%.12f %.12f %.12f\n\n", option->d.f3val[0], option->d.f3val[1], option->d.f3val[2]);
+			break;
+		}
+		}
+	}
+}
+
+char *get_string(char *name) {
+	cfg_option_t *option = cfg_get(&g_seewaves.config, name);
+	if(option && option->which == STRING) {
+		return(option->u.sval);
+	}
+	return NULL;
+}
+
+int get_int(char *name) {
+	cfg_option_t *option = cfg_get(&g_seewaves.config, name);
+	if(option && option->which == INTEGER) {
+		return(option->u.ival);
+	}
+	return(0);
+}
+
+float get_float(char *name) {
+	cfg_option_t *option = cfg_get(&g_seewaves.config, name);
+	if(option && option->which == FLOAT) {
+		return(option->u.fval);
+	}
+	return(0.0);
+}
+
+float *get_float3(char *name, float *value) {
+	cfg_option_t *option = cfg_get(&g_seewaves.config, name);
+	if(option && option->which == FLOAT3) {
+		value[0] = option->u.f3val[0];
+		value[1] = option->u.f3val[1];
+		value[2] = option->u.f3val[2];
+		return(value);
+	}
+	return(NULL);
+}
+
+void set_float3(char *name, float x, float y, float z) {
+	cfg_option_t *option = cfg_get(&g_seewaves.config, name);
+	if(option && option->which == FLOAT3) {
+		option->u.f3val[0] = x;
+		option->u.f3val[1] = y;
+		option->u.f3val[2] = z;
+	}
+}
+
+int application_reconfigure(seewaves_t *s, const char *dirname,
+    const char *filename, int create) {
+	char path[FILENAME_MAX];
+	cfg_option_t *option;
+	int i;
+
+	/* file status */
+	struct stat status;
+
+	/* does directory exist? */
+	if(stat(dirname, &status)) {
+		/* no, does user want it created? */
+		if(create) {
+			/* yes, create it */
+			if(mkdir(dirname, S_IRWXU)) {
+				perror(dirname);
+				return(0);
+			}
+		} else {
+			/* no, we're done here */
+			return(0);
+		}
+	}
+	/* does file exist? */
+	sprintf(path, "%s/%s", dirname, filename);
+	if(stat(path, &status)) {
+		/* no, does user want it created? */
+		if(create) {
+			/* yes, create it */
+			FILE *fp = fopen(path, "w");
+			if(fp == NULL) {
+				perror(path);
+				return(0);
+			}
+			cfg_print(fp);
+			fclose(fp);
+		} else {
+			/* no, we're done here */
+			return(0);
+		}
+	}
+
+	/* load the configuration file */
+	if(cfg_open(&s->config, path, g_config_options) == CFG_ERROR) {
+		return(0);
+	}
+
+	/* load options */
+	for( i = 0; ; i++) {
+		option = &(g_config_options[i]);
+		if(option->name == NULL) {
+			break;
+		}
+		switch(option->which) {
+			case STRING: {
+				cfg_get_string(&s->config, option->name, (char*)option->u.sval, MAX_CFG_STRING, option->d.sval);
+				break;
+			}
+			case INTEGER: {
+				option->u.ival = cfg_get_int(&s->config, option->name, (int)option->u.ival);
+				break;
+			}
+			case FLOAT: {
+				option->u.fval = cfg_get_float(&s->config, option->name, (float)option->u.fval);
+				break;
+			}
+			case FLOAT3: {
+				/* convert from string to three floats */
+				double x, y, z;
+				char buf[MAX_CFG_STRING];
+				sprintf(buf, "%.12f %.12f %.12f", option->d.f3val[0], option->d.f3val[1],
+						option->d.f3val[2]);
+				cfg_get_string(&s->config, option->name, buf, MAX_CFG_STRING, buf);
+				if(sscanf(buf, "%lf %lf %lf", &x, &y, &z) == 3) {
+					option->u.f3val[0] = x;
+					option->u.f3val[1] = y;
+					option->u.f3val[2] = z;
+				}
+				break;
+			}
+		}
+	}
+
+	return(1);
 }
 
 /*
@@ -731,6 +981,12 @@ Initialize application internals.
 Returns 0 on success, non-zero on failure.
 */
 int initialize_application(seewaves_t *s, int argc, char **argv) {
+	/* directory name buffer */
+	char dirname[FILENAME_MAX];
+
+	/* filename buffer */
+	char filename[FILENAME_MAX];
+
     /* return value */
     int err;
 
@@ -753,10 +1009,6 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
 
     /* clear the structure */
     memset(&g_seewaves, 0, sizeof(seewaves_t));
-
-    /* set window to default values */
-    s->window[2] = 800;
-    s->window[3] = 600;
 
     /* default local host, port */
     strcpy(s->data_host, PTP_DEFAULT_CLIENT_HOST);
@@ -784,8 +1036,7 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     g_seewaves.view_options |= 1 << HEADS_UP;
     g_seewaves.view_options |= 1 << AXES;
     g_seewaves.view_options |= 1 << GRID;
-
-    g_seewaves.camera_r = 0.000001;
+    g_seewaves.view_options |= 1 << ROTATION_AXES;
 
     /* process command-line arguments */
     while ((opt = getopt_long(argc, argv, "h:p:t:r:u:v:", long_options,
@@ -827,6 +1078,17 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
             }
         }
     }
+
+    /* optionally override default configuration with globally-defined */
+    sprintf(dirname, "%s/.seewaves", getenv("HOME"));
+    sprintf(filename, "seewaves.cfg");
+    if(application_reconfigure(s, dirname, filename, 1) != 1) {
+    	fprintf(stderr, "User configurations disabled\n");
+    }
+
+    /* optionally override configuration with locally-defined */
+    sprintf(dirname, ".");
+    (void)application_reconfigure(s, dirname, filename, 0);
 
     /* initialize our mutex lock used to safely update data */
     if ((err = pthread_mutex_init(&s->lock, NULL))) {
@@ -875,12 +1137,16 @@ void initialize_gl(seewaves_t *s) {
     glShadeModel(GL_SMOOTH);
 
     glEnable(GL_POINT_SMOOTH);
+
+    /* enable blending for translucence */
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable (GL_LINE_SMOOTH);
     glHint (GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
 	glGetFloatv(GL_SMOOTH_LINE_WIDTH_RANGE, s->line_width_range);
 	glGetFloatv(GL_SMOOTH_LINE_WIDTH_GRANULARITY, &s->line_width_step);
+	glGetFloatv(GL_POINT_SIZE_RANGE, s->point_size_range);
+	glGetFloatv(GL_POINT_SIZE_GRANULARITY, &s->point_size_step);
 }
 
 /*
@@ -904,6 +1170,7 @@ void render_string(GLfloat x, GLfloat y, GLfloat z, char *s) {
 
 	/* save matrix state */
 	glPushMatrix();
+	glLoadIdentity();
 
 	/* set starting position */
 	glRasterPos3f(x, y, z);
@@ -928,15 +1195,17 @@ void push_ortho(void) {
 	/* save current projection */
 	glMatrixMode(GL_PROJECTION);
     glPushMatrix();
+
     /* clear current projection */
     glLoadIdentity();
-	/* switch to orthographic projection */
+
+    /* switch to orthographic projection */
     glOrtho(g_seewaves.viewport_main[0], g_seewaves.viewport_main[2],
     		g_seewaves.viewport_main[1] , g_seewaves.viewport_main[3], -1, 1);
-    /* save current modelview */
+
+    /* switch to modelview */
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
-    /* clear current modelview */
     glLoadIdentity();
 }
 
@@ -948,7 +1217,8 @@ void pop_ortho(void) {
 	/* restore saved projection */
 	glMatrixMode(GL_PROJECTION);
 	glPopMatrix();
-	/* restore saved modelview */
+
+	/* switch to modelview */
 	glMatrixMode(GL_MODELVIEW);
 	glPopMatrix();
 }
@@ -1020,33 +1290,88 @@ void render_grid(GLfloat extent) {
 	glEnd();
 }
 
+#define OBJECTPART (6 << 4)
+
+void render_axes(float x, float y, float z, float length) {
+	glTranslatef(x, y, z);
+	glBegin(GL_LINES);
+		/* x axis */
+		glColor3f(1.0, 0.0, 0.0);
+		glVertex3f(0.0, 0.0, 0.0);
+		glVertex3f(length, 0.0, 0.0);
+
+		/* y axis (rotated to match model) */
+		glColor3f(0.0, 0.0, 1.0);
+		glVertex3f(0.0, 0.0, 0.0);
+		glVertex3f(0.0, length, 0.0);
+
+		/* z axis (rotated to match model) */
+		glColor3f(0.0, 1.0, 0.0);
+		glVertex3f(0.0, 0.0, 0.0);
+		glVertex3f(0.0, 0.0, length);
+	glEnd();
+}
+
+void render_box(float origin[3], float size[3]) {
+	if((size[0] == 0.0) || (size[1] == 0.0) || (size[2] == 0.0)) {
+		return;
+	}
+
+	/* move to origin */
+	glTranslatef(origin[0], origin[1], origin[2]);
+
+	/* draw back side */
+	glColor4f(1.0, 0.0, 0.0, 0.04);
+	glRectf(0.0, 0.0, size[0], size[2]);
+
+	glTranslatef(size[0], 0.0, 0.0);
+	glRotatef(270.0, 0.0, 1.0, 0.0);
+	glRectf(0.0, 0.0, size[1], size[2]);
+
+	glTranslatef(size[1], 0.0, 0.0);
+	glRotatef(270.0, 0.0, 1.0, 0.0);
+	glRectf(0.0, 0.0, size[0], size[2]);
+
+	glTranslatef(size[0], 0.0, 0.0);
+	glRotatef(270.0, 0.0, 1.0, 0.0);
+	glRectf(0.0, 0.0, size[1], size[2]);
+
+	glTranslatef(size[1], 0.0, 0.0);
+	glRotatef(90.0, 1.0, 0.0, 0.0);
+	glRotatef(90.0, 0.0, 0.0, 1.0);
+	glRectf(0.0, 0.0, size[0], size[1]);
+}
 /*
 Called from main loop to render the scene.
 
 @returns 1 if redrawn, 0 if unchanged
 */
 int display(void) {
+	unsigned int particles_in_current_timestep = 0;
+
     /* return value */
     int err;
+
     /* loop iterator */
     unsigned int i;
+
     /* world extent */
 	GLfloat extent = 100;
-    GLint m_viewport[4];
+
+    /* cache eye for speed */
+    GLfloat eye[3];
+    GLfloat up[3];
+    GLfloat target[3];
 
 	/* setup viewport for this rendering */
 	glViewport(g_seewaves.viewport_main[0], g_seewaves.viewport_main[1],
     		g_seewaves.viewport_main[2], g_seewaves.viewport_main[3]);
 
-	glGetIntegerv( GL_VIEWPORT, m_viewport );
-
 	/* setup projection for this viewport */
 	glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    g_seewaves.z_near = DEFAULT_Z_NEAR;
-    g_seewaves.z_far = 10000.0 * g_seewaves.z_near;
     gluPerspective(82.5, g_seewaves.viewport_main[2] / g_seewaves.viewport_main[3],
-    		g_seewaves.z_near, g_seewaves.z_far);
+    		get_float(CFG_ZNEAR), get_float(CFG_ZFAR));
 
     /* prepare for modeling and viewing transforms */
     glMatrixMode(GL_MODELVIEW);
@@ -1064,33 +1389,31 @@ int display(void) {
     /* clear the frame */
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    /* reset modelview matrix */
-    glLoadIdentity();
-
     /* aim the camera */
+    get_float3(CFG_EYE_POS, eye);
+    get_float3(CFG_EYE_UP, up);
+    get_float3(CFG_EYE_TARGET, target);
     gluLookAt(
-        g_seewaves.eye[0],
-        g_seewaves.eye[1],
-        g_seewaves.eye[2],
-        g_seewaves.center[0],
-        g_seewaves.center[1],
-        g_seewaves.center[2],
-        g_seewaves.up[0],
-        g_seewaves.up[1],
-        g_seewaves.up[2]);
+        eye[0],
+        eye[1],
+        eye[2],
+        target[0],
+        target[1],
+        target[2],
+		up[0],
+		up[1],
+		up[2]);
 
-    glPointSize(1.0f);
+    glTranslatef(g_seewaves.rotation_center[0],g_seewaves.rotation_center[2],
+    		g_seewaves.rotation_center[1]);
+    glRotatef(g_seewaves.model_rotation[0], 1.0, 0.0, 0.0);
+    glRotatef(g_seewaves.model_rotation[1], 0.0, 1.0, 0.0);
+    glTranslatef(g_seewaves.model_pan[1], -g_seewaves.model_pan[0], 0.0);
+    glTranslatef(-g_seewaves.rotation_center[0],-g_seewaves.rotation_center[2],
+    		-g_seewaves.rotation_center[1]);
+
+    glPointSize(g_seewaves.point_size_range[0]);
 	glLineWidth(g_seewaves.line_width_range[0]);
-
-	/*
-    push_ortho();
-    glBegin(GL_LINES);
-    glColor3f(0.0, 0.0, 0.0);
-    glVertex2i(g_seewaves.mouse_x, g_seewaves.viewport_main[3] - g_seewaves.mouse_y);
-    glVertex2i(g_seewaves.mouse_x+10, g_seewaves.viewport_main[3] - g_seewaves.mouse_y);
-    glEnd();
-    pop_ortho();
-	*/
 
     /* does user want grid displayed? */
     if (g_seewaves.view_options & (1 << GRID)) {
@@ -1100,51 +1423,62 @@ int display(void) {
     	render_grid(extent);
     	glRotatef(90.0, 0.0, 1.0, 0.0);
     	render_grid(extent);
-
     	glPopMatrix();
     }
 
     /* does user want axes displayed? */
     if (g_seewaves.view_options & (1 << AXES)) {
-		/* we display negative axes slightly darker */
-    	glBegin(GL_LINES);
-    		/* x axis */
-    		glColor3f(1.0, 0.0, 0.0);
-			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(extent, 0.0, 0.0);
+    	glPushMatrix();
+    	render_axes(0.0, 0.0, 0.0, extent);
+    	glPopMatrix();
+    }
 
-			/* y axis (rotated to match model) */
-			glColor3f(0.0, 0.0, 1.0);
-			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(0.0, extent, 0.0);
-
-			/* z axis (rotated to match model) */
-			glColor3f(0.0, 1.0, 0.0);
-			glVertex3f(0.0, 0.0, 0.0);
-			glVertex3f(0.0, 0.0, extent);
-		glEnd();
-		glPushMatrix();
-		glColor3f(0.0, 0.0, 0.0);
-		glTranslatef(g_seewaves.center[0], g_seewaves.center[1], g_seewaves.center[2]);
-		/*glutWireSphere(0.1, 10.0, 10.0);*/
-		glPopMatrix();
+    /* does user want rotation center axes displayed? */
+    if (g_seewaves.view_options & (1 << ROTATION_AXES)) {
+    	glPushMatrix();
+    	render_axes(g_seewaves.rotation_center[0], g_seewaves.rotation_center[1],
+    			g_seewaves.rotation_center[2], 100.0);
+    	glPopMatrix();
     }
 
     /* draw particles */
-    glColor3f(0.0, 0.0, 0.0);
     glBegin(GL_POINTS);
     for(i = 0; i < g_seewaves.total_particle_count; i++) {
-        glVertex3f(g_seewaves.x[i], g_seewaves.z[i], g_seewaves.y[i]);
+    	if(g_seewaves.x[i] == UNDEFINED_PARTICLE) {
+    		glColor3f(1.0, 0.0, 0.0);
+    	} else if(g_seewaves.t[i] == g_seewaves.most_recent_timestamp) {
+    		particles_in_current_timestep++;
+    		glColor3f(0.0, 0.0, 1.0);
+    	} else {
+    		glColor3f(0.0, 0.0, 0.0);
+    	}
+    	glVertex3f(g_seewaves.x[i], g_seewaves.z[i], g_seewaves.y[i]);
     }
     glEnd();
+
+    /* render world box (render last for opacity to work */
+    glColor4f(0.0, 0.0, 0.0, 0.5);
+    glPushMatrix();
+    render_box(g_seewaves.world_origin, g_seewaves.world_size);
+    glPopMatrix();
 
     /* is heads up display enabled? */
     if (g_seewaves.view_options & (1 << HEADS_UP)) {
         /* status message buffer */
         char status_msg[1024];
+        double loss = 0;
         GLfloat y_inc = 20.0f;
         GLfloat y = 10.0f;
         GLfloat x = 10.0f;
+        GLfloat rotation_center[3] = { 0.0, 0.0, 0.0 };
+
+    	glPushMatrix();
+
+    	if(g_seewaves.rotation_center[0] != UNDEFINED_PARTICLE) {
+        	rotation_center[0] = g_seewaves.rotation_center[0];
+        	rotation_center[1] = g_seewaves.rotation_center[1];
+        	rotation_center[2] = g_seewaves.rotation_center[2];
+        }
 
         /* set font color */
         glColor3f(FONT_GRAY, FONT_GRAY, FONT_GRAY);
@@ -1153,6 +1487,12 @@ int display(void) {
     	push_ortho();
 
     	/* render network status */
+    	if(g_seewaves.total_particle_count == 0) {
+    		loss = 0.0;
+    	} else {
+    		loss = (1.0 - (double)((double)particles_in_current_timestep/
+    				(double)g_seewaves.total_particle_count)) * 100.0;
+    	}
     	sprintf(status_msg, "network: outgoing(%s:%i:%i) incoming(%s:%i:%i)",
     			g_seewaves.gpusph_host, g_seewaves.gpusph_port,
     			g_seewaves.heartbeats_sent,
@@ -1162,22 +1502,28 @@ int display(void) {
     	y += y_inc;
 
     	/* render model status */
-    	sprintf(status_msg, "model: particles(%i) time(%.3fs)",
+    	sprintf(status_msg, "model: particles(%i, %i, %.2f%%) time(%.3fs) steps(%i)",
     			g_seewaves.total_particle_count,
-    			g_seewaves.most_recent_timestamp);
+    			particles_in_current_timestep, loss,
+    			g_seewaves.most_recent_timestamp,
+    			g_seewaves.total_timesteps);
     	render_string(x, y, 0.5f, status_msg);
     	y += y_inc;
 
     	/* render camera status (rotated to match model) */
-    	sprintf(status_msg, "camera: eye(%.2f, %.2f, %.2f) center(%.2f, %.2f, %.2f) up(%.2f, %.2f, %.2f)",
-    			g_seewaves.eye[0], g_seewaves.eye[2], g_seewaves.eye[1],
-    			g_seewaves.center[0], g_seewaves.center[2], g_seewaves.center[1],
-    			g_seewaves.up[0], g_seewaves.up[2], g_seewaves.up[1]);
+    	sprintf(status_msg,
+    			"camera: eye(%.2f, %.2f, %.2f) eye_ctr(%.2f, %.2f, %.2f) rot_ctr(%.2f, %.2f, %.2f) rot(%.2f, %.2f)",
+    			eye[0], eye[2], eye[1],
+    			target[0], target[2], target[1],
+    			rotation_center[0], rotation_center[2], rotation_center[1],
+    			g_seewaves.model_rotation[0], g_seewaves.model_rotation[1]);
     	render_string(x, y, 0.5f, status_msg);
 
     	/* switch back */
     	pop_ortho();
+    	glPopMatrix();
     }
+
     /* unlock data */
     if ((err = pthread_mutex_unlock(&g_seewaves.lock))) {
         fprintf(stderr, "Error unlocking mutex: %i\n", err);
@@ -1216,7 +1562,7 @@ int display(void) {
     while((err = glGetError()) != GL_NO_ERROR) {
     	fprintf(stderr, "OpenGL error: %s\n", gluErrorString(err));
     }
-
+    glFlush();
     return(1);
 }
 
@@ -1240,25 +1586,18 @@ GLdouble *z) {
 void GLFWCALL on_mouse(int x, int y) {
 	/* check for user pan request */
 	if((g_seewaves.mouse_button == GLFW_MOUSE_BUTTON_LEFT) &&
-			(g_seewaves.mouse_button_action == GLFW_PRESS) &&
-			(g_seewaves.key_options & (1 << SHIFT))) {
-		/* calculate difference in mouse position */
+			(g_seewaves.mouse_button_action == GLFW_PRESS) ) {
 		int diff_x = g_seewaves.mouse_x - x;
 		int diff_y = g_seewaves.mouse_y - y;
-		/* if any difference, pan */
-		if((diff_x != 0) || (diff_y != 0)) {
-			printf("pressed, panning ");
-			/*camera_pan(diff_x, diff_y);*/
+		if((g_seewaves.key_options & (1 << SHIFT))) {
+			/* user wants to pan */
+			g_seewaves.model_pan[1] -= diff_x * 0.1;
+			g_seewaves.model_pan[0] -= diff_y * 0.1;
+		} else {
+			/* user wants to rotate about the center of rotation */
+			g_seewaves.model_rotation[1] -= diff_x * 0.1;
+			g_seewaves.model_rotation[0] -= diff_y * 0.1;
 		}
-	} else {
-		GLdouble ogl_x, ogl_y, ogl_z;
-		opengl_pos_from_mouse_pos(x, y, &ogl_x, &ogl_y, &ogl_z);
-		/*printf("%.2f, %.2f, %.2f\n", ogl_x, ogl_y, ogl_z);*/
-		/*g_seewaves.center[0] = ogl_x;
-		g_seewaves.center[1] = ogl_y;
-		g_seewaves.center[2] = ogl_z;*/
-		g_seewaves.mouse_x = x;
-		g_seewaves.mouse_y = y;
 	}
 	g_seewaves.mouse_x = x;
 	g_seewaves.mouse_y = y;
@@ -1267,6 +1606,19 @@ void GLFWCALL on_mouse(int x, int y) {
 void GLFWCALL on_mouse_button(int button, int action) {
 	g_seewaves.mouse_button = button;
 	g_seewaves.mouse_button_action = action;
+	if((g_seewaves.mouse_button == GLFW_MOUSE_BUTTON_LEFT) &&
+			(g_seewaves.mouse_button_action == GLFW_PRESS)) {
+		if((g_seewaves.key_options & (1 << SHIFT))) {
+			/* user wants to pan */
+		} else {
+			/* user wants to rotate about the center of rotation.  Save
+			 * mouse pointer location and rotate relative to movement from
+			 * that point about the rotation center.
+			 */
+			glfwGetMousePos(&g_seewaves.mouse_pressed_at[0], &g_seewaves.mouse_pressed_at[1]);
+		}
+	}
+
 }
 
 void GLFWCALL on_mouse_wheel(int pos) {
@@ -1339,13 +1691,38 @@ void GLFWCALL on_char(int key, int action) {
         	break;
         }
         case 'X': {
-        	/* look along X axis */
-        	camera_set_raw(5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        	/* look at X side */
+        	float eye[3];
+
+        	g_seewaves.model_pan[0] = 0.0;
+        	g_seewaves.model_pan[1] = 0.0;
+        	g_seewaves.model_rotation[0] = 0.0;
+        	g_seewaves.model_rotation[1] = 0.0;
+        	eye[0] = -2.0;
+        	eye[1] = g_seewaves.world_origin[2] + (g_seewaves.world_size[2] / 2);
+        	eye[2] = g_seewaves.world_origin[1] + (g_seewaves.world_size[1] / 2);
+        	camera_set_raw(eye[0], eye[1], eye[2],
+        			0.0, 1.0, 0.0,
+        			g_seewaves.rotation_center[0], g_seewaves.rotation_center[1],
+        			g_seewaves.rotation_center[2]);
         	break;
         }
         case 'Y': {
-        	/* look along Y axis */
-        	camera_set_raw(0.0, 0.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        	/* look at Y side */
+        	float eye[3];
+
+        	g_seewaves.model_pan[0] = 0.0;
+        	g_seewaves.model_pan[1] = 0.0;
+        	g_seewaves.model_rotation[0] = 0.0;
+        	g_seewaves.model_rotation[1] = 0.0;
+        	eye[0] = g_seewaves.world_origin[0] + (g_seewaves.world_size[0] / 2);
+        	eye[1] = g_seewaves.world_origin[2] + (g_seewaves.world_size[2] / 2);
+        	eye[2] = 2.0;
+
+        	camera_set_raw(eye[0], eye[1], eye[2],
+        			0.0, 1.0, 0.0,
+        			g_seewaves.rotation_center[0], g_seewaves.rotation_center[1],
+        			g_seewaves.rotation_center[2]);
         	break;
         }
         case 'Z': {
@@ -1355,6 +1732,8 @@ void GLFWCALL on_char(int key, int action) {
         }
         case '0': {
         	/* reset camera */
+        	g_seewaves.model_rotation[0] = 0.0;
+        	g_seewaves.model_rotation[1] = 0.0;
         	camera_reset();
         	break;
         }
@@ -1366,6 +1745,7 @@ void GLFWCALL on_char(int key, int action) {
         }
         case 'a': {
         	g_seewaves.view_options ^= 1 << AXES;
+        	g_seewaves.view_options ^= 1 << ROTATION_AXES;
         	break;
         }
         case 'g': {
@@ -1387,8 +1767,8 @@ Recalculates all dependencies.
 */
 void on_resize(int w, int h) {
 	/* cache the new window size internally */
-	g_seewaves.window[2] = w;
-	g_seewaves.window[3] = h;
+	cfg_set_int(&g_seewaves.config, CFG_WIN_WIDTH, w);
+	cfg_set_int(&g_seewaves.config, CFG_WIN_HEIGHT, h);
 
 	/* recalculate viewport sizes */
     g_seewaves.viewport_main[0] = 0;
@@ -1420,8 +1800,8 @@ int main(int argc, char **argv) {
     }
 
     /* open the GL window */
-    if (!glfwOpenWindow(g_seewaves.window[2],
-        g_seewaves.window[3],
+    if (!glfwOpenWindow(get_int(CFG_WIN_WIDTH),
+    	get_int(CFG_WIN_HEIGHT),
         g_seewaves.red_bits,
         g_seewaves.green_bits,
         g_seewaves.blue_bits,
@@ -1431,6 +1811,8 @@ int main(int argc, char **argv) {
         g_seewaves.display_mode)) {
         return(-1);
     }
+
+    glfwSetWindowTitle(get_string(CFG_WIN_TITLE));
 
     /* set a keyboard callback function */
     glfwSetCharCallback(on_char);
@@ -1495,5 +1877,7 @@ int main(int argc, char **argv) {
         fprintf(stdout, "Seewaves exiting\n");
         fflush(stdout);
     }
+
+    cfg_close(&g_seewaves.config);
     exit(EXIT_SUCCESS);
 }
