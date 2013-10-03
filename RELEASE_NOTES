@@ -2,6 +2,7 @@
     - better mouse navigation
     - transparent world boundaries
     - colored particles based on time step
+    - configuration file support
 0.11
     - mouse zoom navigation
     - optional grid-lines
