@@ -32,7 +32,7 @@ LDIR =../lib
 _DEPS = ptp.h cfg.h
 DEPS = $(patsubst %,$(IDIR)/%,$(_DEPS))
 
-_OBJ = seewaves.o cfg.o
+_OBJ = seewaves.o cfg.o Matrix.o Vector.o ArcBall.o Quaternion.o
 OBJ = $(patsubst %,$(ODIR)/%,$(_OBJ))
 
 $(ODIR)/%.o: %.c $(DEPS)

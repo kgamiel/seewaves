@@ -109,7 +109,7 @@ char *cfg_get_string(cfg_t *cfg, const char *name, char *value, int max_len,
 	for( line = 1; ; line++) {
 		/* buffer for line */
 		char line_buf[CFG_MAX_LINE];
-		char lname[512];
+		char lname[CFG_MAX_LINE];
 
 		/* read line from file */
 		if(fgets(line_buf, sizeof(line_buf), fp) == NULL) {

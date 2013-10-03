@@ -35,6 +35,7 @@ Usage       : seewaves --help
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <sys/time.h>
 #include <float.h>
 #include <math.h>
 #include "GL/glfw.h"
@@ -52,13 +53,18 @@ Usage       : seewaves --help
 #include <assert.h>
 #include "ptp.h"
 #include "cfg.h"
+#include "ArcBall.h"
+#include "Quaternion.h"
+#include "Matrix.h"
+
+//#define LOCK 1
 
 /* External variables */
 extern char *optarg;
 
 /* Versioning */
 #define VERSION_HIGH 0
-#define VERSION_LOW 12
+#define VERSION_LOW 13
 
 #define UNDEFINED_PARTICLE -1.0
 
@@ -173,9 +179,9 @@ typedef struct {
     /* view options bit string */
     unsigned char view_options;
     /* mouse x position */
-    int mouse_x;
+    float mouse_x;
     /* mouse y position */
-    int mouse_y;
+    float mouse_y;
     /* mouse button id */
     int mouse_button;
     /* mouse button action */
@@ -216,6 +222,12 @@ typedef struct {
 	float model_rotation[3];
 	/* model pan */
 	float model_pan[3];
+	/* rotation view */
+	arcball_t arcball;
+	Quaternion arcball_rotation;
+	Matrix arcball_transform;
+	Matrix arcball_last_rotation;
+	Matrix arcball_this_rotation;
 } seewaves_t;
 
 /* formatting flag */
@@ -290,6 +302,13 @@ void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd) {
 	fprintf(fp, "eye:\t\t\t(%2f, %.2f, %.2f)\n", fv[0], fv[1], fv[2]);
 	get_float3(CFG_EYE_TARGET, fv);
 	fprintf(fp, "target:\t\t\t(%2f, %.2f, %.2f)\n", fv[0], fv[1], fv[2]);
+	fprintf(fp, "udp_max_packet_size:\t%i\n", PTP_UDP_PACKET_MAX);
+	fprintf(fp, "particles_per_packet:\t%ld\n", PTP_PARTICLES_PER_PACKET);
+	fprintf(fp, "packet_hdr_size:\t%ld\n", PTP_PACKET_HEADER_SIZE);
+	fprintf(fp, "particle_data_size\t%ld\n", sizeof(ptp_particle_data_t));
+	fprintf(fp, "packet_size (incs %ld for each of %ld particles):%ld\n", 
+        sizeof(ptp_particle_data_t), PTP_PARTICLES_PER_PACKET, sizeof(ptp_packet_t));
+	fprintf(fp, "packet_per_udp_buf:\t%ld\n", (s->udp_buffer_size/sizeof(ptp_packet_t)));
 	fprintf(fp, "packets_received:\t%i\n", s->packets_received);
 	fprintf(fp, "win_width:\t\t%i\n", get_int(CFG_WIN_WIDTH));
 	fprintf(fp, "win_height:\t\t%i\n", get_int(CFG_WIN_HEIGHT));
@@ -376,7 +395,7 @@ void *heartbeat_thread_main(void *user_data) {
     long err;
 
     /* heartbeat packet */
-    ptp_heartbeat_t hb;
+    ptp_heartbeat_packet_t hb;
 
     /* current time */
     time_t now;
@@ -437,7 +456,7 @@ void *heartbeat_thread_main(void *user_data) {
     freeaddrinfo(server_address_info);
 
     /* clear heartbeat packet */
-    memset(&hb, 0, sizeof(ptp_heartbeat_t));
+    memset(&hb, 0, sizeof(ptp_heartbeat_packet_t));
 
     /* initialize timing */
     last_heartbeat_sent = 0;
@@ -454,7 +473,7 @@ void *heartbeat_thread_main(void *user_data) {
             /* yes, send a heartbeat */
             ssize_t bytes_sent;
             bytes_sent = sendto(sw->heartbeat_socket_fd, &hb,
-                sizeof(ptp_heartbeat_t), 0,
+                sizeof(ptp_heartbeat_packet_t), 0,
                 (const struct sockaddr *)(&heartbeat_socket_remote_address),
                 heartbeat_socket_remote_address_len);
             if (bytes_sent == -1) {
@@ -627,7 +646,6 @@ void *data_thread_main(void *user_data) {
                                        0, (struct sockaddr *)
                                        &data_socket_remote_address,
                                        &data_socket_remote_address_len);
-
         /* did we receive a packet? */
         if (packet_length_bytes == sizeof(ptp_packet_t)) {
             /* yes, get mutex lock */
@@ -665,8 +683,8 @@ void *data_thread_main(void *user_data) {
                             sizeof(float));
                         sw->z = (float*)calloc(packet.total_particle_count,
                             sizeof(float));
-                        sw->flag = (unsigned int*)calloc(packet.total_particle_count,
-                            sizeof(unsigned int));
+                        //sw->flag = (unsigned int*)calloc(packet.total_particle_count,
+                          //  sizeof(unsigned int));
                         sw->t = (float*)calloc(packet.total_particle_count,
                             sizeof(float));
                         for(particle = 0; particle < packet.total_particle_count;particle++) {
@@ -690,13 +708,23 @@ void *data_thread_main(void *user_data) {
                         sw->y[id] = packet.data[particle].position[1];
                         sw->z[id] = packet.data[particle].position[2];
                         /*sw->w[id] = packet.data[particle].position[2];*/
-                        sw->flag[id] = packet.data[particle].flag;
+                        /*sw->flag[id] = packet.data[particle].flag;*/
                     }
                     if(sw->rotation_center[0] == UNDEFINED_PARTICLE) {
                     	sw->rotation_center[0] = sw->world_origin[0] + sw->world_size[0] / 2.0;
                     	sw->rotation_center[1] = sw->world_origin[2] + sw->world_size[2] / 2.0;
                     	sw->rotation_center[2] = sw->world_origin[1] + sw->world_size[1] / 2.0;
                     }
+                    sw->udp_buffer_size = sw->total_particle_count * sizeof(ptp_packet_t);
+                    /*
+    	            if (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF,
+                        &sw->udp_buffer_size,
+    			        (socklen_t)(sizeof(int))) == -1) {
+    		            perror("setsockopt(SO_RCVBUF)");
+                        printf("Unable to allocated %i bytes\n",
+                            sw->udp_buffer_size);
+                    }
+                    */
 
                     /* Release the lock */
                     if ((err = pthread_mutex_unlock(&sw->lock))) {
@@ -705,6 +733,8 @@ void *data_thread_main(void *user_data) {
                 } else {
                     if(err == EBUSY) {
                         /* mutex was locked */
+                        printf("!LOCK\n");
+                        fflush(stdout);
                     } else if(err == EINVAL) {
                         fprintf(stderr, "Invalid mutex lock?");
                     } else {
@@ -726,7 +756,7 @@ void *data_thread_main(void *user_data) {
                 /* Invalid argument */
                 done = 1;
             } else if (errno == EAGAIN) {
-                /* ignore */
+                /* no data available, */
             } else if (errno == EWOULDBLOCK) {
                 /* ignore */
             } else {
@@ -1090,6 +1120,12 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     sprintf(dirname, ".");
     (void)application_reconfigure(s, dirname, filename, 0);
 
+    arcball_init(&s->arcball, get_int(CFG_WIN_WIDTH), get_int(CFG_WIN_HEIGHT));
+    Quaternion_loadIdentity(&s->arcball_rotation);
+    Matrix_loadIdentity(&s->arcball_transform);
+    Matrix_loadIdentity(&s->arcball_last_rotation);
+    Matrix_loadIdentity(&s->arcball_this_rotation);
+
     /* initialize our mutex lock used to safely update data */
     if ((err = pthread_mutex_init(&s->lock, NULL))) {
         PT_ERR_MSG("pthread_mutex_init", err);
@@ -1147,6 +1183,20 @@ void initialize_gl(seewaves_t *s) {
 	glGetFloatv(GL_SMOOTH_LINE_WIDTH_GRANULARITY, &s->line_width_step);
 	glGetFloatv(GL_POINT_SIZE_RANGE, s->point_size_range);
 	glGetFloatv(GL_POINT_SIZE_GRANULARITY, &s->point_size_step);
+
+	/* setup viewport for this rendering */
+	glViewport(g_seewaves.viewport_main[0], g_seewaves.viewport_main[1],
+    		g_seewaves.viewport_main[2], g_seewaves.viewport_main[3]);
+
+	/* setup projection for this viewport */
+	glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(82.5, g_seewaves.viewport_main[2] / g_seewaves.viewport_main[3],
+    		get_float(CFG_ZNEAR), get_float(CFG_ZFAR));
+
+    /* prepare for modeling and viewing transforms */
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
 }
 
 /*
@@ -1341,12 +1391,42 @@ void render_box(float origin[3], float size[3]) {
 	glRotatef(90.0, 0.0, 0.0, 1.0);
 	glRectf(0.0, 0.0, size[0], size[1]);
 }
+
+int display(void) {
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	glLoadIdentity();
+	glTranslatef(-1.5f, 0.0f, -20.0f);
+	glPushMatrix();
+	//Matrix_print(&g_seewaves.arcball_transform);
+	glMultMatrixf(g_seewaves.arcball_transform.m);
+
+	/* draw here */
+	glColor3f(1.0f, 0.0f, 0.0f);
+	glutSolidCube(10.0f);
+
+	glPopMatrix();
+/*
+	glPopMatrix();
+	glLoadIdentity();
+	glTranslatef(1.5f, 0.0f, -6.0f);
+	glPushMatrix();
+	glMultMatrixf(g_seewaves.arcball_transform.m);
+	glColor3f(0.0f, 1.0f, 0.0f);
+	glutSolidSphere(1.0f, 10.0f, 10.0f);
+	glPopMatrix();
+	*/
+	glFlush();
+
+	return(1);
+}
+
+
 /*
 Called from main loop to render the scene.
 
 @returns 1 if redrawn, 0 if unchanged
 */
-int display(void) {
+int displayx(void) {
 	unsigned int particles_in_current_timestep = 0;
 
     /* return value */
@@ -1378,6 +1458,7 @@ int display(void) {
     glLoadIdentity();
 
     /* try to lock shared data */
+#ifdef LOCK
     if ((err = pthread_mutex_trylock(&g_seewaves.lock))) {
     	/* already locked */
         if(err != EBUSY) {
@@ -1385,6 +1466,7 @@ int display(void) {
         }
         return(0);
     }
+#endif
 
     /* clear the frame */
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1502,7 +1584,7 @@ int display(void) {
     	y += y_inc;
 
     	/* render model status */
-    	sprintf(status_msg, "model: particles(%i, %i, %.2f%%) time(%.3fs) steps(%i)",
+    	sprintf(status_msg, "model: particles(%i, %i, -%.2f%%) time(%.3fs) steps(%i)",
     			g_seewaves.total_particle_count,
     			particles_in_current_timestep, loss,
     			g_seewaves.most_recent_timestamp,
@@ -1524,10 +1606,12 @@ int display(void) {
     	glPopMatrix();
     }
 
+#ifdef LOCK
     /* unlock data */
     if ((err = pthread_mutex_unlock(&g_seewaves.lock))) {
         fprintf(stderr, "Error unlocking mutex: %i\n", err);
     }
+#endif
 
     /* handle fading text */
     if(g_seewaves.fade_start != 0) {
@@ -1583,42 +1667,37 @@ GLdouble *z) {
     gluUnProject( winX, winY, winZ, modelview, projection, viewport, x, y, z);
 }
 
-void GLFWCALL on_mouse(int x, int y) {
-	/* check for user pan request */
-	if((g_seewaves.mouse_button == GLFW_MOUSE_BUTTON_LEFT) &&
-			(g_seewaves.mouse_button_action == GLFW_PRESS) ) {
-		int diff_x = g_seewaves.mouse_x - x;
-		int diff_y = g_seewaves.mouse_y - y;
-		if((g_seewaves.key_options & (1 << SHIFT))) {
-			/* user wants to pan */
-			g_seewaves.model_pan[1] -= diff_x * 0.1;
-			g_seewaves.model_pan[0] -= diff_y * 0.1;
-		} else {
-			/* user wants to rotate about the center of rotation */
-			g_seewaves.model_rotation[1] -= diff_x * 0.1;
-			g_seewaves.model_rotation[0] -= diff_y * 0.1;
-		}
-	}
-	g_seewaves.mouse_x = x;
-	g_seewaves.mouse_y = y;
-}
-
 void GLFWCALL on_mouse_button(int button, int action) {
 	g_seewaves.mouse_button = button;
 	g_seewaves.mouse_button_action = action;
 	if((g_seewaves.mouse_button == GLFW_MOUSE_BUTTON_LEFT) &&
-			(g_seewaves.mouse_button_action == GLFW_PRESS)) {
-		if((g_seewaves.key_options & (1 << SHIFT))) {
-			/* user wants to pan */
-		} else {
-			/* user wants to rotate about the center of rotation.  Save
-			 * mouse pointer location and rotate relative to movement from
-			 * that point about the rotation center.
-			 */
-			glfwGetMousePos(&g_seewaves.mouse_pressed_at[0], &g_seewaves.mouse_pressed_at[1]);
-		}
+		(g_seewaves.mouse_button_action == GLFW_PRESS)) {
+		arcball_click(&g_seewaves.arcball, g_seewaves.mouse_x, g_seewaves.mouse_y);
 	}
+}
 
+/*
+ * Called when mouse is moved
+ */
+void GLFWCALL on_mouse(int x, int y) {
+	g_seewaves.mouse_x = x;
+	g_seewaves.mouse_y = y;
+	if((g_seewaves.mouse_button == GLFW_MOUSE_BUTTON_LEFT) &&
+		(g_seewaves.mouse_button_action == GLFW_PRESS)) {
+		printf("%i,%i\n", x, y);
+		printf("PRE:  ");
+		Matrix_print(&g_seewaves.arcball_transform);
+
+		arcball_drag(&g_seewaves.arcball, x, y, &g_seewaves.arcball_rotation);
+		Matrix m = Quaternion_toMatrix(g_seewaves.arcball_rotation);
+		Matrix_withMatrix(&g_seewaves.arcball_this_rotation, &m);
+		Matrix_multiply(&g_seewaves.arcball_this_rotation, g_seewaves.arcball_last_rotation);
+		Matrix_withMatrix(&g_seewaves.arcball_transform, &g_seewaves.arcball_this_rotation);
+
+		printf("POST: ");
+		Matrix_print(&g_seewaves.arcball_transform);
+
+	}
 }
 
 void GLFWCALL on_mouse_wheel(int pos) {
@@ -1758,6 +1837,9 @@ void GLFWCALL on_char(int key, int action) {
     }
 }
 
+void physics_update(long usec) {
+}
+
 /*
 Called on window resize event.
 Recalculates all dependencies.
@@ -1780,6 +1862,8 @@ void on_resize(int w, int h) {
     g_seewaves.viewport_toolbar[1] = h - 50.0;
     g_seewaves.viewport_toolbar[2] = w;
     g_seewaves.viewport_toolbar[3] = 50.0;
+
+    arcball_set_bounds(&g_seewaves.arcball, (float)w, (float)h);
 }
 
 int main(int argc, char **argv) {
@@ -1839,6 +1923,8 @@ int main(int argc, char **argv) {
     }
 
     /* loop until the user closes the window or exits */
+    struct timeval t_start, t_end;
+    gettimeofday(&t_start, NULL);
     while (g_seewaves.flag_exit_main_loop != 1) {
         /* did user close window? */
         if (!glfwGetWindowParam(GLFW_OPENED)) {
@@ -1847,6 +1933,9 @@ int main(int argc, char **argv) {
         }
 
         /* render display */
+        gettimeofday(&t_end, NULL);
+        long usec_diff = (t_end.tv_sec - t_start.tv_sec) * 1000000 + (t_end.tv_usec - t_start.tv_usec);
+        physics_update(usec_diff);
         if(display()) {
             /* swap the display buffer */
             glfwSwapBuffers();

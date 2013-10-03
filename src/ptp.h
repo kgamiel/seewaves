@@ -8,8 +8,7 @@
 #ifndef PTP_H_
 #define PTP_H_
 
-/* in preliminary testing, 4 gives good performance */
-#define PTP_PARTICLES_PER_PACKET 4
+#define PTP_UDP_PACKET_MAX 1472
 #define PTP_HEARTBEAT_TTL_S 1
 #define PTP_DEFAULT_CLIENT_PORT 50000
 #define PTP_DEFAULT_SERVER_PORT 50001
@@ -18,9 +17,12 @@
 
 typedef struct __attribute__ ((packed)) {
     unsigned int id;
-    short flag;
+    //short particle_type;
     float position[4];
 } ptp_particle_data_t;
+
+#define PTP_PACKET_HEADER_SIZE ((2 * sizeof(unsigned int)) + (7 * sizeof(float)))
+#define PTP_PARTICLES_PER_PACKET ((PTP_UDP_PACKET_MAX - PTP_PACKET_HEADER_SIZE) / sizeof(ptp_particle_data_t))
 
 typedef struct __attribute__ ((packed)) {
     unsigned int total_particle_count;
@@ -33,6 +35,7 @@ typedef struct __attribute__ ((packed)) {
 
 typedef struct __attribute__ ((packed)) {
 	unsigned int count;
-} ptp_heartbeat_t;
+} ptp_heartbeat_packet_t;
+
 
 #endif /* PTP_H_ */
