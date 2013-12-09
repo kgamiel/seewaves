@@ -18,7 +18,7 @@
 typedef struct __attribute__ ((packed)) {
     unsigned int id;
     //short particle_type;
-    float position[4];
+    double position[4];
 } ptp_particle_data_t;
 
 #define PTP_PACKET_HEADER_SIZE ((2 * sizeof(unsigned int)) + (7 * sizeof(float)))

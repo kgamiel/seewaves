@@ -129,13 +129,13 @@ typedef struct {
     /* total number of particles in current simulation */
     unsigned int total_particle_count;
     /* array of x position of all particles, total_particle_cnt long */
-    float *x;
+    double *x;
     /* array of y position of all particles, total_particle_cnt long */
-    float *y;
+    double *y;
     /* array of z position of all particles, total_particle_cnt long */
-    float *z;
+    double *z;
     /* array of w (mass) of all particles, total_particle_cnt long */
-    float *w;
+    double *w;
     /* array of t (timestamp) of all particles, total_particle_cnt long */
     float *t;
     /* particle flag */
@@ -513,7 +513,7 @@ void *heartbeat_thread_main(void *user_data) {
             }
         }
         /* give cpu a break */
-        usleep(10);
+        //usleep(10);
     }
     if(sw->verbosity) {
         fprintf(stdout, "Heartbeat thread exiting\n");
@@ -666,6 +666,7 @@ void *data_thread_main(void *user_data) {
 
                     /* keep track of packet count received */
                     sw->packets_received++;
+
                     /* allocate memory if first time or new particle count */
                     if (sw->total_particle_count !=
                         packet.total_particle_count) {
@@ -677,12 +678,12 @@ void *data_thread_main(void *user_data) {
                             free(sw->flag);
                             free(sw->t);
                         }
-                        sw->x = (float*)calloc(packet.total_particle_count,
-                            sizeof(float));
-                        sw->y = (float*)calloc(packet.total_particle_count,
-                            sizeof(float));
-                        sw->z = (float*)calloc(packet.total_particle_count,
-                            sizeof(float));
+                        sw->x = (double*)calloc(packet.total_particle_count,
+                            sizeof(double));
+                        sw->y = (double*)calloc(packet.total_particle_count,
+                            sizeof(double));
+                        sw->z = (double*)calloc(packet.total_particle_count,
+                            sizeof(double));
                         //sw->flag = (unsigned int*)calloc(packet.total_particle_count,
                           //  sizeof(unsigned int));
                         sw->t = (float*)calloc(packet.total_particle_count,
@@ -765,7 +766,7 @@ void *data_thread_main(void *user_data) {
                 done = 1;
             }
         }
-        usleep(10);
+        //usleep(10);
     }
     if(sw->verbosity) {
         printf("Data thread exiting\n");
@@ -1191,8 +1192,8 @@ void initialize_gl(seewaves_t *s) {
 	/* setup projection for this viewport */
 	glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(82.5, g_seewaves.viewport_main[2] / g_seewaves.viewport_main[3],
-    		get_float(CFG_ZNEAR), get_float(CFG_ZFAR));
+    gluPerspective(82.5, g_seewaves.viewport_main[2] /
+        g_seewaves.viewport_main[3], get_float(CFG_ZNEAR), get_float(CFG_ZFAR));
 
     /* prepare for modeling and viewing transforms */
     glMatrixMode(GL_MODELVIEW);
@@ -1392,41 +1393,12 @@ void render_box(float origin[3], float size[3]) {
 	glRectf(0.0, 0.0, size[0], size[1]);
 }
 
-int display(void) {
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glLoadIdentity();
-	glTranslatef(-1.5f, 0.0f, -20.0f);
-	glPushMatrix();
-	//Matrix_print(&g_seewaves.arcball_transform);
-	glMultMatrixf(g_seewaves.arcball_transform.m);
-
-	/* draw here */
-	glColor3f(1.0f, 0.0f, 0.0f);
-	glutSolidCube(10.0f);
-
-	glPopMatrix();
-/*
-	glPopMatrix();
-	glLoadIdentity();
-	glTranslatef(1.5f, 0.0f, -6.0f);
-	glPushMatrix();
-	glMultMatrixf(g_seewaves.arcball_transform.m);
-	glColor3f(0.0f, 1.0f, 0.0f);
-	glutSolidSphere(1.0f, 10.0f, 10.0f);
-	glPopMatrix();
-	*/
-	glFlush();
-
-	return(1);
-}
-
-
 /*
 Called from main loop to render the scene.
 
 @returns 1 if redrawn, 0 if unchanged
 */
-int displayx(void) {
+int display(void) {
 	unsigned int particles_in_current_timestep = 0;
 
     /* return value */
@@ -1455,6 +1427,7 @@ int displayx(void) {
 
     /* prepare for modeling and viewing transforms */
     glMatrixMode(GL_MODELVIEW);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glLoadIdentity();
 
     /* try to lock shared data */
@@ -1468,8 +1441,9 @@ int displayx(void) {
     }
 #endif
 
-    /* clear the frame */
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	glPushMatrix();
+	glMultMatrixf(g_seewaves.arcball_transform.m);
+
 
     /* aim the camera */
     get_float3(CFG_EYE_POS, eye);
@@ -1548,7 +1522,7 @@ int displayx(void) {
     if (g_seewaves.view_options & (1 << HEADS_UP)) {
         /* status message buffer */
         char status_msg[1024];
-        double loss = 0;
+        double loss = 0.0;
         GLfloat y_inc = 20.0f;
         GLfloat y = 10.0f;
         GLfloat x = 10.0f;
@@ -1572,8 +1546,8 @@ int displayx(void) {
     	if(g_seewaves.total_particle_count == 0) {
     		loss = 0.0;
     	} else {
-    		loss = (1.0 - (double)((double)particles_in_current_timestep/
-    				(double)g_seewaves.total_particle_count)) * 100.0;
+    		loss = particles_in_current_timestep /
+    				g_seewaves.total_particle_count * 100.0;
     	}
     	sprintf(status_msg, "network: outgoing(%s:%i:%i) incoming(%s:%i:%i)",
     			g_seewaves.gpusph_host, g_seewaves.gpusph_port,
@@ -1584,7 +1558,7 @@ int displayx(void) {
     	y += y_inc;
 
     	/* render model status */
-    	sprintf(status_msg, "model: particles(%i, %i, -%.2f%%) time(%.3fs) steps(%i)",
+    	sprintf(status_msg, "model: particles(%i, %i, %.2f%%) time(%.3fs) steps(%i)",
     			g_seewaves.total_particle_count,
     			particles_in_current_timestep, loss,
     			g_seewaves.most_recent_timestamp,
@@ -1646,6 +1620,7 @@ int displayx(void) {
     while((err = glGetError()) != GL_NO_ERROR) {
     	fprintf(stderr, "OpenGL error: %s\n", gluErrorString(err));
     }
+    glPopMatrix();
     glFlush();
     return(1);
 }
@@ -1672,6 +1647,7 @@ void GLFWCALL on_mouse_button(int button, int action) {
 	g_seewaves.mouse_button_action = action;
 	if((g_seewaves.mouse_button == GLFW_MOUSE_BUTTON_LEFT) &&
 		(g_seewaves.mouse_button_action == GLFW_PRESS)) {
+		g_seewaves.arcball_last_rotation = g_seewaves.arcball_this_rotation;
 		arcball_click(&g_seewaves.arcball, g_seewaves.mouse_x, g_seewaves.mouse_y);
 	}
 }
@@ -1684,19 +1660,11 @@ void GLFWCALL on_mouse(int x, int y) {
 	g_seewaves.mouse_y = y;
 	if((g_seewaves.mouse_button == GLFW_MOUSE_BUTTON_LEFT) &&
 		(g_seewaves.mouse_button_action == GLFW_PRESS)) {
-		printf("%i,%i\n", x, y);
-		printf("PRE:  ");
-		Matrix_print(&g_seewaves.arcball_transform);
-
 		arcball_drag(&g_seewaves.arcball, x, y, &g_seewaves.arcball_rotation);
 		Matrix m = Quaternion_toMatrix(g_seewaves.arcball_rotation);
 		Matrix_withMatrix(&g_seewaves.arcball_this_rotation, &m);
 		Matrix_multiply(&g_seewaves.arcball_this_rotation, g_seewaves.arcball_last_rotation);
 		Matrix_withMatrix(&g_seewaves.arcball_transform, &g_seewaves.arcball_this_rotation);
-
-		printf("POST: ");
-		Matrix_print(&g_seewaves.arcball_transform);
-
 	}
 }
 
@@ -1942,7 +1910,7 @@ int main(int argc, char **argv) {
         }
 
         /* give the CPU a break */
-        usleep(10);
+        //usleep(10);
     }
 
     /* close the underlying sockets, results in threads exiting gracefully */
