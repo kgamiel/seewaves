@@ -294,7 +294,7 @@ float Matrix_determinant(Matrix matrix) {
 	       matrix.m[12] * -subdeterminant3;
 }
 
-void Matrix_withMatrix(Matrix *src, Matrix *dest) {
+void Matrix_withMatrix(Matrix *dest, Matrix *src) {
 	memcpy(dest->m, src->m, sizeof(float) * 16);
 }
 

@@ -33,7 +33,7 @@ struct Matrix {
 
 void Matrix_loadIdentity(Matrix * matrix1);
 //Matrix Matrix_identity();
-void Matrix_withMatrix(Matrix *src, Matrix *dest);
+void Matrix_withMatrix(Matrix *dest, Matrix *src);
 
 Matrix Matrix_withValues(float m0,  float m4,  float m8,  float m12,
                          float m1,  float m5,  float m9,  float m13,
