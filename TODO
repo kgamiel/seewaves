@@ -1,7 +1,8 @@
 Critical
 - Bind to all interfaces by default
-- Mouse navigation
-- get model extents
+- Improve mouse navigation
+    - pan
+
 
 Secondary
 - look at naming for local v. remote host names, ports

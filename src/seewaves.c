@@ -29,6 +29,7 @@ Strategy    : PTP uses User Datagram Protocol (UDP) over Internet Protocol (IP)
                 decodes them, and updates internal data structures.
 Usage       : seewaves --help
 ============================================================================*/
+
 #include <stdio.h>
 #include <pthread.h>
 #include <string.h>
@@ -39,202 +40,28 @@ Usage       : seewaves --help
 #include <float.h>
 #include <math.h>
 #include "GL/glfw.h"
-#ifdef __APPLE__
-#include <GLUT/glut.h>
-#else
-#include <unistd.h>
-#include <GL/glut.h>
-#endif
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <assert.h>
+#include "heartbeat.h"
 #include "ptp.h"
 #include "cfg.h"
 #include "ArcBall.h"
 #include "Quaternion.h"
 #include "Matrix.h"
+#include "util.h"
+#include "seewaves.h"
 
+// Uncomment for experimental mutex locking, not sure it's needed
 //#define LOCK 1
 
 /* External variables */
 extern char *optarg;
 
-/* Versioning */
-#define VERSION_HIGH 0
-#define VERSION_LOW 13
-
-#define UNDEFINED_PARTICLE -1.0
-
-/*
-glfw mouse wheel behavior currently different in OSX v. Linux, scheduled for
-fix in version 3.0.
-*/
-#ifdef __APPLE__
-#define CAMERA_TRANSLATE_SCALER 0.01
-#else
-#define CAMERA_TRANSLATE_SCALER 1.0
-#endif
-#define FONT_GRAY 0.5
-
-typedef enum { HEADS_UP, AXES, GRID, ROTATION_AXES } seewaves_view_option_t;
-typedef enum { SHIFT } seewaves_key_option_t;
-
-/* define all application configuration settings here */
-#define CFG_WIN_TITLE	"window.title"
-#define CFG_WIN_X		"window.x"
-#define CFG_WIN_Y		"window.y"
-#define CFG_WIN_WIDTH	"window.width"
-#define CFG_WIN_HEIGHT	"window.height"
-#define CFG_EYE_POS		"eye.position"
-#define CFG_EYE_UP		"eye.up"
-#define CFG_EYE_TARGET	"eye.target"
-#define CFG_ZNEAR		"znear"
-#define CFG_ZFAR		"zfar"
-
-cfg_option_t g_config_options[] = {
-		{ CFG_WIN_TITLE, "Main window title",      STRING,  { ""      }, { "Seewaves" } },
-		{ CFG_WIN_X,     "Main window X position", INTEGER, { .ival=0 }, { .ival=100  } },
-		{ CFG_WIN_Y,     "Main window Y position", INTEGER, { .ival=0 }, { .ival=100  } },
-		{ CFG_WIN_WIDTH, "Main window width",      INTEGER, { .ival=0 }, { .ival=800  } },
-		{ CFG_WIN_HEIGHT,"Main window height",     INTEGER, { .ival=0 }, { .ival=600  } },
-		{ CFG_EYE_POS,   "Eye position",           FLOAT3,  { .ival=0 }, { .f3val = { 1.0, 1.0, 1.0 } } },
-		{ CFG_EYE_UP,    "Eye up vector",          FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 1.0 } } },
-		{ CFG_EYE_TARGET,"Eye target position",    FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 0.0 } } },
-		{ CFG_ZNEAR,     "Z near",                 FLOAT,   { .fval=0 }, { .fval=0.1  } },
-		{ CFG_ZFAR,      "Z far",                  FLOAT,   { .fval=0 }, { .fval=10000.0  } },
-		{ NULL,          NULL,                     0,       { ""      }, { NULL       } }
-};
-
-/* Global application data structure */
-typedef struct {
-	/* configuration */
-	cfg_t config;
-	/* verbosity */
-	int verbosity;
-    /* heartbeat thread, sends packets to server */
-    pthread_t heartbeat_thread;
-    /* heartbeat thread socket descriptor */
-    int heartbeat_socket_fd;
-    /* number of heartbeats sent */
-    int heartbeats_sent;
-    /* data thread, handles incoming data packets */
-    pthread_t data_thread;
-    /* data thread socket descriptor, incoming data packets */
-    int data_socket_fd;
-    /* mutex lock for sharing data safely */
-    pthread_mutex_t lock;
-    /* total number of particles in current simulation */
-    unsigned int total_particle_count;
-    /* array of x position of all particles, total_particle_cnt long */
-    double *x;
-    /* array of y position of all particles, total_particle_cnt long */
-    double *y;
-    /* array of z position of all particles, total_particle_cnt long */
-    double *z;
-    /* array of w (mass) of all particles, total_particle_cnt long */
-    double *w;
-    /* array of t (timestamp) of all particles, total_particle_cnt long */
-    float *t;
-    /* particle flag */
-    unsigned int *flag;
-    /* total number of packets received from server */
-    int packets_received;
-    /* main application loop exit flag */
-    int flag_exit_main_loop;
-    /* local server IP to which to bind */
-    char data_host[INET6_ADDRSTRLEN];
-    /* local server port number to which to bind */
-    uint16_t data_port;
-    /* remote server host name or IP */
-    char gpusph_host[INET6_ADDRSTRLEN];
-    /* remote server port number */
-    uint16_t gpusph_port;
-    /* display red bits */
-    int red_bits;
-    /* display green bits */
-    int green_bits;
-    /* display blue bits */
-    int blue_bits;
-    /* display alpha bits */
-    int alpha_bits;
-    /* display depth bits */
-    int depth_bits;
-    /* display stencil bits */
-    int stencil_bits;
-    /* display mode */
-    int display_mode;
-    /* background clear color */
-    GLfloat background_color[4];
-    /* window dimensions */
-    GLint window[4];
-    /* most recent timestamp */
-    float most_recent_timestamp;
-    /* total timesteps */
-    int total_timesteps;
-    /* UDP receiver buffer size (optionally set by user) */
-    int udp_buffer_size;
-    /* view options bit string */
-    unsigned char view_options;
-    /* mouse x position */
-    float mouse_x;
-    /* mouse y position */
-    float mouse_y;
-    /* mouse button id */
-    int mouse_button;
-    /* mouse button action */
-    int mouse_button_action;
-    /* mouse wheel position */
-    int mouse_wheel_pos;
-    /* key options */
-    unsigned char key_options;
-    /* text to fade */
-    char *fade_text;
-    /* text to fade start time */
-    time_t fade_start;
-    /* how long should the fade last */
-    double fade_duration;
-    /* position of fading text */
-    GLfloat fade_position[3];
-    /* contains range of glLineWidth() values */
-	GLfloat line_width_range[2];
-	/* contains step size for glLineWidth() values */
-	GLfloat line_width_step;
-    /* contains range of glPointSize() values */
-	GLfloat point_size_range[2];
-	/* contains step size for glPointSize() values */
-	GLfloat point_size_step;
-	/* toolbar viewport dimensions */
-	GLfloat viewport_toolbar[4];
-	/* main viewport dimensions */
-	GLfloat viewport_main[4];
-	/* center of rotation */
-	float rotation_center[3];
-	/* origin of world */
-	float world_origin[3];
-	/* size of world */
-	float world_size[3];
-	/* mouse pointer location when clicked */
-	int mouse_pressed_at[2];
-	/* model rotation */
-	float model_rotation[3];
-	/* model pan */
-	float model_pan[3];
-	/* rotation view */
-	arcball_t arcball;
-	Quaternion arcball_rotation;
-	Matrix arcball_transform;
-	Matrix arcball_last_rotation;
-	Matrix arcball_this_rotation;
-} seewaves_t;
-
-/* formatting flag */
-typedef enum { BASIC, FULL } seewaves_format_t;
-
 /* Local prototypes */
-void *heartbeat_thread_main(void *user_data);
 void *data_thread_main(void *user_data);
 void camera_reset(void);
 int initialize_application(seewaves_t *s, int argc, char **argv);
@@ -242,9 +69,6 @@ void initialize_gl(seewaves_t *s);
 int display(void);
 void GLFWCALL on_key(int key, int action);
 void GLFWCALL on_resize(int w, int h);
-void util_get_current_time_string(char *buf, ssize_t max_len);
-void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd);
-int util_get_udp_buffer_size(int sd);
 void camera_set_raw(GLfloat eye_x, GLfloat eye_y, GLfloat eye_z,
 		GLfloat up_x, GLfloat up_y, GLfloat up_z,
 		GLfloat target_x, GLfloat target_y, GLfloat target_z);
@@ -274,12 +98,27 @@ void render_axes(float x, float y, float z, float length);
 void render_box(float origin[3], float size[3]);
 
 /* Global application data variable */
-seewaves_t g_seewaves;
+static seewaves_t g_seewaves;
 
 /* Print pthreads error user-defined and internal error message. */
 #define PT_ERR_MSG(str, code) { \
 		fprintf(stderr, "%s: %s\n", str, strerror(code)); \
 }
+
+/* Configuration options */
+cfg_option_t g_config_options[] = {
+		{ CFG_WIN_TITLE, "Main window title",      STRING,  { ""      }, { "Seewaves" } },
+		{ CFG_WIN_X,     "Main window X position", INTEGER, { .ival=0 }, { .ival=100  } },
+		{ CFG_WIN_Y,     "Main window Y position", INTEGER, { .ival=0 }, { .ival=100  } },
+		{ CFG_WIN_WIDTH, "Main window width",      INTEGER, { .ival=0 }, { .ival=800  } },
+		{ CFG_WIN_HEIGHT,"Main window height",     INTEGER, { .ival=0 }, { .ival=600  } },
+		{ CFG_EYE_POS,   "Eye position",           FLOAT3,  { .ival=0 }, { .f3val = { 1.0, 1.0, 1.0 } } },
+		{ CFG_EYE_UP,    "Eye up vector",          FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 1.0 } } },
+		{ CFG_EYE_TARGET,"Eye target position",    FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 0.0 } } },
+		{ CFG_ZNEAR,     "Z near",                 FLOAT,   { .fval=0 }, { .fval=0.1  } },
+		{ CFG_ZFAR,      "Z far",                  FLOAT,   { .fval=0 }, { .fval=10000.0  } },
+		{ NULL,          NULL,                     0,       { ""      }, { NULL       } }
+};
 
 /*
 Print structure information.
@@ -323,209 +162,6 @@ void util_print_seewaves(seewaves_t *s, seewaves_format_t format, int fd) {
 	}
 }
 
-/*
-Utility function to get UDP receiver buffer size.
-
-@param	sd	socket descriptor or -1 for system default
-
-@returns size in bytes
-*/
-int util_get_udp_buffer_size(int sd) {
-	int size;
-	int len = sizeof(int);
-
-	if(sd == -1) {
-		int fd;
-		if ((fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
-			perror("socket");
-			return(0);
-		}
-		if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, (socklen_t*)&len) == -1) {
-			perror("getsockopt(bufsize)");
-			close(fd);
-		}
-		return(size);
-	}
-	if (getsockopt(sd, SOL_SOCKET, SO_RCVBUF, &size, (socklen_t*)&len) == -1) {
-		perror("getsockopt(bufsize)");
-	}
-	return(size);
-}
-
-/*
-Get current date/time as a formatted string.
-
-@param	buf	Buffer into which string is stored.
-@param	max_len	Size of buffer
-*/
-void util_get_current_time_string(char *buf, ssize_t max_len) {
-	time_t now;
-	struct tm * timeinfo;
-	time(&now);
-	timeinfo = localtime(&now);
-	strftime(buf, max_len, "%m-%d-%Y_%X", timeinfo);
-}
-
-/*
-Heartbeat thread loop.
-This function is the main loop for the heartbeat thread.  It sends heartbeat
-packet to server at regular intervals.
-
-@param  user_data   seewaves_t ptr cast to void ptr.
-
-@returns NULL
-*/
-void *heartbeat_thread_main(void *user_data) {
-    /* address variables */
-    struct sockaddr_in heartbeat_socket_remote_address;
-    socklen_t heartbeat_socket_remote_address_len = sizeof(
-                heartbeat_socket_remote_address);
-
-    /* hints to resolver */
-    struct addrinfo address_hints;
-    struct addrinfo *address_p;
-
-    /* server address information returned from resolver */
-    struct addrinfo *server_address_info;
-
-    /* port number as string */
-    char port_as_string[16];
-
-    /* return values */
-    long err;
-
-    /* heartbeat packet */
-    ptp_heartbeat_packet_t hb;
-
-    /* current time */
-    time_t now;
-
-    /* last time a heartbeat was sent to server */
-    time_t last_heartbeat_sent;
-
-    /* loop flag */
-    int done = 0;
-
-    /* cast to our global data structure pointer */
-    seewaves_t *sw = (seewaves_t*)user_data;
-
-    /* create socket */
-    if ((sw->heartbeat_socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) ==
-        -1) {
-        perror("socket");
-        pthread_exit(NULL);
-    }
-
-    /* set non-blocking so we can use it to test for closure */
-    fcntl(sw->heartbeat_socket_fd, F_SETFL, O_NONBLOCK);
-
-    /* resolve host name */
-    memset(&address_hints, 0, sizeof address_hints); /* clear the struct */
-    address_hints.ai_family = AF_UNSPEC;     /* IPv4 or IPv6 */
-    address_hints.ai_socktype = SOCK_DGRAM;  /* UDP */
-    sprintf(port_as_string, "%i", sw->gpusph_port);
-    if ((err = getaddrinfo(sw->gpusph_host, port_as_string,
-        &address_hints, &server_address_info))) {
-        fprintf(stderr, "getaddrinfo() failed: %s", gai_strerror((int)err));
-        close(sw->heartbeat_socket_fd);
-        pthread_exit(NULL);
-    }
-
-    /* loop over returned IP addresses, just use the first IPv4 */
-    for (address_p = server_address_info; address_p != NULL;
-        address_p = address_p->ai_next) {
-
-        void *addr;
-        if (address_p->ai_family == AF_INET) { /* IPv4 */
-            struct sockaddr_in *ipv4 = (struct sockaddr_in *)address_p->ai_addr;
-            addr = &(ipv4->sin_addr);
-            memcpy(&heartbeat_socket_remote_address, address_p->ai_addr,
-                (size_t)heartbeat_socket_remote_address_len);
-            heartbeat_socket_remote_address_len = address_p->ai_addrlen;
-            inet_ntop(address_p->ai_family, addr, sw->gpusph_host,
-                sizeof(sw->gpusph_host));
-            break;
-        } else { /* IPv6 */
-            struct sockaddr_in6 *ipv6 =
-                (struct sockaddr_in6 *)address_p->ai_addr;
-            addr = &(ipv6->sin6_addr);
-        }
-    }
-
-    /* free linked-list returned from resolver */
-    freeaddrinfo(server_address_info);
-
-    /* clear heartbeat packet */
-    memset(&hb, 0, sizeof(ptp_heartbeat_packet_t));
-
-    /* initialize timing */
-    last_heartbeat_sent = 0;
-
-    /* main thread loop */
-    while(!done) {
-        /* buffer used to test for socket closure */
-        unsigned char b[64];
-
-        /* get current time */
-        time(&now);
-        /* is it time to send a heartbeat? */
-        if (difftime(now, last_heartbeat_sent) > PTP_HEARTBEAT_TTL_S) {
-            /* yes, send a heartbeat */
-            ssize_t bytes_sent;
-            bytes_sent = sendto(sw->heartbeat_socket_fd, &hb,
-                sizeof(ptp_heartbeat_packet_t), 0,
-                (const struct sockaddr *)(&heartbeat_socket_remote_address),
-                heartbeat_socket_remote_address_len);
-            if (bytes_sent == -1) {
-                /* failed.  If EBADF, we'll detect that below  */
-                if (errno != EBADF) {
-                    /* hmm, real failure of some sort */
-                    perror("sendto()");
-                }
-            } else if(bytes_sent == 0) {
-                done = 1;
-            } else {
-                /* keep track of heartbeats sent */
-                sw->heartbeats_sent++;
-            }
-            /* update timing */
-            time(&last_heartbeat_sent);
-        }
-        /* has main thread closed our socket? */
-        err = recvfrom(sw->heartbeat_socket_fd, &b, sizeof(b), 0, NULL, NULL);
-        if (err == 0) {
-            /* socket closed on linux */
-            done = 1;
-        } else {
-            if(errno == EAGAIN) {
-                /* ignore, we're non-blocking and nothings ready */
-            } else if(errno == EINTR) {
-                /* ignore */
-            } else if (errno == EBADF) {
-                /* Parent thread closed the socket, that's our signal that
-                we're done */
-                done = 1;
-            } else if (errno == ETIMEDOUT) {
-                /* ignore */
-            } else {
-                perror("heartbeat recvfrom");
-                done = 1;
-            }
-        }
-        /* give cpu a break */
-        //usleep(10);
-    }
-    if(sw->verbosity) {
-        fprintf(stdout, "Heartbeat thread exiting\n");
-        fflush(stdout);
-    }
-
-    /* close our socket */
-    close(sw->heartbeat_socket_fd);
-
-    /* we're done */
-    return(NULL);
-}
 const char *byte_to_binary(int x) {
     static char b[9];
     b[0] = '\0';
@@ -647,6 +283,7 @@ void *data_thread_main(void *user_data) {
                                        &data_socket_remote_address,
                                        &data_socket_remote_address_len);
         /* did we receive a packet? */
+        int new_model_received = 0;
         if (packet_length_bytes == sizeof(ptp_packet_t)) {
             /* yes, get mutex lock */
             int locked = 0;
@@ -670,7 +307,8 @@ void *data_thread_main(void *user_data) {
                     /* allocate memory if first time or new particle count */
                     if (sw->total_particle_count !=
                         packet.total_particle_count) {
-                        if (sw->x != NULL) {
+                    	new_model_received = 1;
+                    	if (sw->x != NULL) {
                             /* not first time, but different count, so free */
                             free(sw->x);
                             free(sw->y);
@@ -684,8 +322,8 @@ void *data_thread_main(void *user_data) {
                             sizeof(double));
                         sw->z = (double*)calloc(packet.total_particle_count,
                             sizeof(double));
-                        //sw->flag = (unsigned int*)calloc(packet.total_particle_count,
-                          //  sizeof(unsigned int));
+                        sw->particle_type = (short*)calloc(packet.total_particle_count,
+                            sizeof(short));
                         sw->t = (float*)calloc(packet.total_particle_count,
                             sizeof(float));
                         for(particle = 0; particle < packet.total_particle_count;particle++) {
@@ -708,6 +346,7 @@ void *data_thread_main(void *user_data) {
                         sw->x[id] = packet.data[particle].position[0];
                         sw->y[id] = packet.data[particle].position[1];
                         sw->z[id] = packet.data[particle].position[2];
+                        sw->particle_type[id] = packet.data[particle].particle_type;
                         /*sw->w[id] = packet.data[particle].position[2];*/
                         /*sw->flag[id] = packet.data[particle].flag;*/
                     }
@@ -726,7 +365,22 @@ void *data_thread_main(void *user_data) {
                             sw->udp_buffer_size);
                     }
                     */
+#ifdef XXX
+                    if(new_model_received) {
+                        /* set camera based on new world */
+                        GLfloat eye[3];
+                        GLfloat target[3];
+                        eye[0] = g_seewaves.world_origin[0] + (g_seewaves.world_size[0] / 2);
+                        eye[1] = g_seewaves.world_origin[2] + (g_seewaves.world_size[2] / 2);
+                        eye[2] = g_seewaves.world_origin[1] + (g_seewaves.world_size[1] / 2);
+                        target[0] = g_seewaves.world_origin[0] + (g_seewaves.world_size[0] / 2);
+                        target[1] = g_seewaves.world_origin[2] + (g_seewaves.world_size[2] / 2);
+                        target[2] = g_seewaves.world_origin[1] + (g_seewaves.world_size[1] / 2);
+                        camera_set_raw(eye[0], eye[1], eye[2], 0.0, 1.0, 0.0, target[0], target[1], target[2]);
 
+                    	new_model_received = 0;
+                    }
+#endif
                     /* Release the lock */
                     if ((err = pthread_mutex_unlock(&sw->lock))) {
                         fprintf(stderr, "Error creating mutex: %i\n", err);
@@ -1500,15 +1154,14 @@ int display(void) {
     /* draw particles */
     glBegin(GL_POINTS);
     for(i = 0; i < g_seewaves.total_particle_count; i++) {
-    	if(g_seewaves.x[i] == UNDEFINED_PARTICLE) {
-    		glColor3f(1.0, 0.0, 0.0);
-    	} else if(g_seewaves.t[i] == g_seewaves.most_recent_timestamp) {
+    	//short pt = g_seewaves.particle_type[i];
+    	if(g_seewaves.t[i] == g_seewaves.most_recent_timestamp) {
     		particles_in_current_timestep++;
     		glColor3f(0.0, 0.0, 1.0);
     	} else {
-    		glColor3f(0.0, 0.0, 0.0);
+        	glColor3f(0.5, 0.5, 0.5);
     	}
-    	glVertex3f(g_seewaves.x[i], g_seewaves.z[i], g_seewaves.y[i]);
+		glVertex3f(g_seewaves.x[i], g_seewaves.z[i], g_seewaves.y[i]);
     }
     glEnd();
 
