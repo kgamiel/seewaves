@@ -21,6 +21,8 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <assert.h>
+#include "util.h"
+#include "data_thread.h"
 #include "seewaves.h"
 #include "ptp.h"
 

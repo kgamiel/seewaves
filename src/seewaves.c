@@ -63,6 +63,7 @@ Usage       : seewaves --help
 extern char *optarg;
 
 /* Local prototypes */
+void physics_update(long usec);
 void camera_reset(void);
 int initialize_application(seewaves_t *s, int argc, char **argv);
 void initialize_gl(seewaves_t *s);

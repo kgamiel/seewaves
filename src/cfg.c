@@ -49,7 +49,7 @@ cfg_error_t cfg_open(cfg_t *cfg, const char *filename, cfg_option_t *options) {
 	struct stat status;
 
 	/* clear it out */
-	memset(cfg, 0, sizeof(cfg));
+	memset(cfg, 0, sizeof(cfg_t));
 
 	/* keep the filename */
 	snprintf(cfg->filename, FILENAME_MAX, filename, "%s");
