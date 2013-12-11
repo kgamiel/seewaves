@@ -91,7 +91,6 @@ float get_float(char *name);
 char *get_string(char *name);
 int application_reconfigure(seewaves_t *s, const char *dirname,
     const char *filename, int create);
-void cfg_print(FILE *fp);
 float *get_float3(char *name, float *value);
 void set_float3(char *name, float x, float y, float z);
 const char *byte_to_binary(int x);
@@ -118,8 +117,46 @@ cfg_option_t g_config_options[] = {
 		{ CFG_EYE_TARGET,"Eye target position",    FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 0.0 } } },
 		{ CFG_ZNEAR,     "Z near",                 FLOAT,   { .fval=0 }, { .fval=0.1  } },
 		{ CFG_ZFAR,      "Z far",                  FLOAT,   { .fval=0 }, { .fval=10000.0  } },
+		{ CFG_FLUID_COLOR,"Fluid color",           FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 1.0 } } },
+		{ CFG_BOUNDARY_COLOR,"Boundary color",     FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 0.0 } } },
+		{ CFG_PISTON_COLOR,"Piston color",         FLOAT3,  { .ival=0 }, { .f3val = { 1.0, 0.0, 0.0 } } },
+		{ CFG_PADDLE_COLOR,"Paddle color",         FLOAT3,  { .ival=0 }, { .f3val = { 0.2, 0.2, 0.2 } } },
+		{ CFG_GATE_COLOR,"Gate color",             FLOAT3,  { .ival=0 }, { .f3val = { 1.0, 1.0, 0.0 } } },
+		{ CFG_OBJECT_COLOR,"Object color",         FLOAT3,  { .ival=0 }, { .f3val = { 0.0, 0.0, 0.0 } } },
+		{ CFG_TESTPOINT_COLOR,"Test point color",  FLOAT3,  { .ival=0 }, { .f3val = { 1.0, 0.0, 0.0 } } },
+		{ CFG_SURFACE_COLOR,"Surface color",       FLOAT3,  { .ival=0 }, { .f3val = { 1.0, 0.0, 0.0 } } },
 		{ NULL,          NULL,                     0,       { ""      }, { NULL       } }
 };
+
+void cfg_print(FILE *fp) {
+	cfg_option_t *option;
+	int i;
+	for( i = 0; ; i++) {
+		option = &(g_config_options[i]);
+		if(option->name == NULL) {
+			break;
+		}
+		fprintf(fp, "# %s\n%s ", option->description, option->name);
+		switch(option->which) {
+		case STRING: {
+			fprintf(fp, "%s\n\n", option->d.sval);
+			break;
+		}
+		case INTEGER: {
+			fprintf(fp, "%i\n\n", option->d.ival);
+			break;
+		}
+		case FLOAT: {
+			fprintf(fp, "%.3f\n\n", option->d.fval);
+			break;
+		}
+		case FLOAT3: {
+			fprintf(fp, "%.3f %.3f %.3f\n\n", option->d.f3val[0], option->d.f3val[1], option->d.f3val[2]);
+			break;
+		}
+		}
+	}
+}
 
 /*
 Print structure information.
@@ -238,36 +275,6 @@ void camera_dolly(int units) {
 	z = eye[2] + scaled_units * dir_z;
 
     set_float3(CFG_EYE_POS, x, y, z);
-}
-
-void cfg_print(FILE *fp) {
-	cfg_option_t *option;
-	int i;
-	for( i = 0; ; i++) {
-		option = &(g_config_options[i]);
-		if(option->name == NULL) {
-			break;
-		}
-		fprintf(fp, "# %s\n%s ", option->description, option->name);
-		switch(option->which) {
-		case STRING: {
-			fprintf(fp, "%s\n\n", option->d.sval);
-			break;
-		}
-		case INTEGER: {
-			fprintf(fp, "%i\n\n", option->d.ival);
-			break;
-		}
-		case FLOAT: {
-			fprintf(fp, "%.12f\n\n", option->d.fval);
-			break;
-		}
-		case FLOAT3: {
-			fprintf(fp, "%.12f %.12f %.12f\n\n", option->d.f3val[0], option->d.f3val[1], option->d.f3val[2]);
-			break;
-		}
-		}
-	}
 }
 
 char *get_string(char *name) {
@@ -793,6 +800,24 @@ Called from main loop to render the scene.
 @returns 1 if redrawn, 0 if unchanged
 */
 int display(void) {
+	/* A more full-featured config will solve this hack */
+	float fluid_color[3];
+	float boundary_color[3];
+	float piston_color[3];
+	float paddle_color[3];
+	float gate_color[3];
+	float object_color[3];
+	float testpoint_color[3];
+	float surface_color[3];
+
+	get_float3(CFG_FLUID_COLOR, fluid_color);
+	get_float3(CFG_BOUNDARY_COLOR, boundary_color);
+	get_float3(CFG_PISTON_COLOR, piston_color);
+	get_float3(CFG_PADDLE_COLOR, paddle_color);
+	get_float3(CFG_GATE_COLOR, gate_color);
+	get_float3(CFG_OBJECT_COLOR, object_color);
+	get_float3(CFG_SURFACE_COLOR, surface_color);
+
 	unsigned int particles_in_current_timestep = 0;
 
     /* return value */
@@ -823,6 +848,18 @@ int display(void) {
     glMatrixMode(GL_MODELVIEW);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glLoadIdentity();
+
+    /* has user requested help screen? */
+    /*
+    if(g_seewaves.show_help) {
+        glColor3f(FONT_GRAY, FONT_GRAY, FONT_GRAY);
+
+    	push_ortho();
+    	pop_ortho();
+    	return 1;
+    }
+	*/
+
 
     /* try to lock shared data */
 #ifdef LOCK
@@ -894,10 +931,26 @@ int display(void) {
     /* draw particles */
     glBegin(GL_POINTS);
     for(i = 0; i < g_seewaves.total_particle_count; i++) {
-    	//short pt = g_seewaves.particle_type[i];
+    	short ptype = g_seewaves.particle_type[i];
     	if(g_seewaves.t[i] == g_seewaves.most_recent_timestamp) {
     		particles_in_current_timestep++;
-    		glColor3f(0.0, 0.0, 1.0);
+    	}
+        if(ptype == 0) {
+    		glColor3f(fluid_color[0], fluid_color[1], fluid_color[2]);
+        } else if(ptype == 16) {
+    		glColor3f(boundary_color[0], boundary_color[1], boundary_color[2]);
+        } else if(ptype == 32) {
+    		glColor3f(piston_color[0], piston_color[1], piston_color[2]);
+        } else if(ptype == 48) {
+    		glColor3f(paddle_color[0], paddle_color[1], paddle_color[2]);
+        } else if(ptype == 64) {
+    		glColor3f(gate_color[0], gate_color[1], gate_color[2]);
+        } else if(ptype == 80) {
+    		glColor3f(object_color[0], object_color[1], object_color[2]);
+        } else if(ptype == 96) {
+    		glColor3f(testpoint_color[0], testpoint_color[1], testpoint_color[2]);
+        } else if(ptype == 256) {
+    		glColor3f(surface_color[0], surface_color[1], surface_color[2]);
     	} else {
         	glColor3f(0.5, 0.5, 0.5);
     	}
@@ -1190,6 +1243,10 @@ void GLFWCALL on_char(int key, int action) {
         }
         case 'g': {
         	g_seewaves.view_options ^= 1 << GRID;
+        	break;
+        }
+        case '?': {
+        	g_seewaves.show_help = 1;
         	break;
         }
         default:

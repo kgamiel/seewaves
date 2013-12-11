@@ -166,3 +166,4 @@ cfg_error_t cfg_close(cfg_t *cfg) {
 	(void)cfg;
 	return(CFG_OK);
 }
+

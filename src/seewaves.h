@@ -42,6 +42,15 @@ typedef enum { SHIFT } seewaves_key_option_t;
 #define CFG_EYE_TARGET	"eye.target"
 #define CFG_ZNEAR		"znear"
 #define CFG_ZFAR		"zfar"
+#define CFG_FLUID_COLOR		"particle.type.fluid.color"
+#define CFG_BOUNDARY_COLOR	"particle.type.boundary.color"
+#define CFG_PISTON_COLOR	"particle.type.piston.color"
+#define CFG_PADDLE_COLOR	"particle.type.paddle.color"
+#define CFG_GATE_COLOR		"particle.type.gate.color"
+#define CFG_OBJECT_COLOR	"particle.type.object.color"
+#define CFG_TESTPOINT_COLOR	"particle.type.testpoint.color"
+#define CFG_SURFACE_COLOR	"particle.type.surface.color"
+
 
 /* Global application data structure */
 typedef struct {
@@ -165,6 +174,7 @@ typedef struct {
 	Matrix arcball_transform;
 	Matrix arcball_last_rotation;
 	Matrix arcball_this_rotation;
+	short show_help;
 } seewaves_t;
 
 /* formatting flag */
