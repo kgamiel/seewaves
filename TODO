@@ -2,6 +2,9 @@ Critical
 - Bind to all interfaces by default
 - Improve mouse navigation
     - pan
+- server-side particle filtering
+    - by type
+    - sub-sample
 
 
 Secondary
