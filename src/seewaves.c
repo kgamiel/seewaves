@@ -63,6 +63,7 @@ Usage       : seewaves --help
 extern char *optarg;
 
 /* Local prototypes */
+void cfg_print(FILE *fp);
 void physics_update(long usec);
 void camera_reset(void);
 int initialize_application(seewaves_t *s, int argc, char **argv);
@@ -1004,11 +1005,12 @@ int display(void) {
     	y += y_inc;
 
     	/* render model status */
-    	sprintf(status_msg, "model: particles(%i, %i, %.2f%%) time(%.3fs) steps(%i)",
+    	sprintf(status_msg, "model: particles(%i, %i, %.2f%%) time(%.3fs) steps(%i) id(%u)",
     			g_seewaves.total_particle_count,
     			particles_in_current_timestep, loss,
     			g_seewaves.most_recent_timestamp,
-    			g_seewaves.total_timesteps);
+    			g_seewaves.total_timesteps,
+    			g_seewaves.model_id);
     	render_string(x, y, 0.5f, status_msg);
     	y += y_inc;
 

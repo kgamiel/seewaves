@@ -175,6 +175,8 @@ typedef struct {
 	Matrix arcball_last_rotation;
 	Matrix arcball_this_rotation;
 	short show_help;
+	/* current model id (as defined by server) */
+	pid_t model_id;
 } seewaves_t;
 
 /* formatting flag */

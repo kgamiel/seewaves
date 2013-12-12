@@ -1,3 +1,28 @@
+/*  Copyright 2011-2013 Alexis Herault, Giuseppe Bilotta, Robert A. Dalrymple, Eugenio Rustico, Ciro Del Negro
+
+    Istituto Nazionale di Geofisica e Vulcanologia
+        Sezione di Catania, Catania, Italy
+
+    Università di Catania, Catania, Italy
+
+    Johns Hopkins University, Baltimore, MD
+
+    This file is part of GPUSPH.
+
+    GPUSPH is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    GPUSPH is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with GPUSPH.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 /*
  * ptp.h
  *
@@ -8,6 +33,7 @@
 #ifndef PTP_H_
 #define PTP_H_
 
+#define PTP_VERSION 0
 #define PTP_UDP_PACKET_MAX 1472
 #define PTP_HEARTBEAT_TTL_S 1
 #define PTP_DEFAULT_CLIENT_PORT 50000
@@ -25,6 +51,8 @@ typedef struct __attribute__ ((packed)) {
 #define PTP_PARTICLES_PER_PACKET ((PTP_UDP_PACKET_MAX - PTP_PACKET_HEADER_SIZE) / sizeof(ptp_particle_data_t))
 
 typedef struct __attribute__ ((packed)) {
+    unsigned char   version;
+    pid_t           model_id;
     unsigned int total_particle_count;
     unsigned int particle_count;
     float t;

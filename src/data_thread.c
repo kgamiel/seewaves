@@ -130,125 +130,117 @@ void *data_thread_main(void *user_data) {
         /* receive a packet */
         memset((char *) &data_socket_remote_address, 0,
                sizeof(data_socket_remote_address));
-        packet_length_bytes = recvfrom(sw->data_socket_fd, &packet,
-                                       sizeof(ptp_packet_t),
-                                       0, (struct sockaddr *)
+
+        /* first byte has version number, are we compatible? */
+        unsigned char buf;
+        packet_length_bytes = recvfrom(sw->data_socket_fd, &buf,
+                                       1, MSG_PEEK, (struct sockaddr *)
                                        &data_socket_remote_address,
                                        &data_socket_remote_address_len);
-        /* did we receive a packet? */
-        int new_model_received = 0;
-        if (packet_length_bytes == sizeof(ptp_packet_t)) {
-            /* yes, get mutex lock */
-            int locked = 0;
-            while(!locked) {
-                if ((err = pthread_mutex_trylock(&sw->lock)) == 0) {
-                    /* got the lock */
-                    unsigned int particle = 0;
-                    /* exit loop flag */
-                    locked++;
+        if (packet_length_bytes == 1) {
+			if(buf > PTP_VERSION) {
+				fprintf(stderr, "Unsupported version %i\n", buf);
+				exit(1);
+			}
+			packet_length_bytes = recvfrom(sw->data_socket_fd, &packet,
+									   sizeof(ptp_packet_t),
+									   0, (struct sockaddr *)
+									   &data_socket_remote_address,
+									   &data_socket_remote_address_len);
+			if (packet_length_bytes < sizeof(ptp_packet_t)) {
+				fprintf(stderr, "Error, expected %ld bytes, got %ld\n",
+						sizeof(ptp_packet_t),
+						packet_length_bytes);
+				exit(1);
+			}
+			/* we have received a packet */
+			int locked = 0;
+			while(!locked) {
+				err = pthread_mutex_trylock(&sw->lock);
+				if(err) {
+					if(err == EBUSY) {
+						/* mutex was locked */
+						printf("!LOCK\n");
+						fflush(stdout);
+					} else if(err == EINVAL) {
+						fprintf(stderr, "Invalid mutex lock?");
+					} else {
+						fprintf(stderr, "Unhandled mutex lock error: %i", err);
+					}
+					continue;
+				}
 
-                    /* KAG - fix me, should be list, they can be out-of-order
-                     * keep most recent timestamp */
-                    if(packet.t > sw->most_recent_timestamp) {
-                    	sw->most_recent_timestamp = packet.t;
-                    	sw->total_timesteps++;
-                    }
+				/* got the lock */
+				unsigned int particle = 0;
+				/* exit loop flag */
+				locked++;
 
-                    /* keep track of packet count received */
-                    sw->packets_received++;
+				/* KAG - fix me, should be list, they can be out-of-order
+				 * keep most recent timestamp */
+				if(packet.t > sw->most_recent_timestamp) {
+					sw->most_recent_timestamp = packet.t;
+					sw->total_timesteps++;
+				}
 
-                    /* allocate memory if first time or new particle count */
-                    if (sw->total_particle_count !=
-                        packet.total_particle_count) {
-                    	new_model_received = 1;
-                    	if (sw->x != NULL) {
-                            /* not first time, but different count, so free */
-                            free(sw->x);
-                            free(sw->y);
-                            free(sw->z);
-                            free(sw->flag);
-                            free(sw->t);
-                        }
-                        sw->x = (double*)calloc(packet.total_particle_count,
-                            sizeof(double));
-                        sw->y = (double*)calloc(packet.total_particle_count,
-                            sizeof(double));
-                        sw->z = (double*)calloc(packet.total_particle_count,
-                            sizeof(double));
-                        sw->particle_type = (short*)calloc(packet.total_particle_count,
-                            sizeof(short));
-                        sw->t = (float*)calloc(packet.total_particle_count,
-                            sizeof(float));
-                        for(particle = 0; particle < packet.total_particle_count;particle++) {
-                        	sw->x[particle] = UNDEFINED_PARTICLE;
-                        }
-                        sw->rotation_center[0] = UNDEFINED_PARTICLE;
-                        memcpy(sw->world_origin, packet.world_origin, sizeof(packet.world_origin));
-                        memcpy(sw->world_size, packet.world_size, sizeof(packet.world_size));
-                    }
+				/* keep track of packet count received */
+				sw->packets_received++;
 
-                    /* save total number of particles in model */
-                    sw->total_particle_count = packet.total_particle_count;
+				/* allocate memory if first time or new model */
+				if (sw->model_id != packet.model_id) {
+					if (sw->x != NULL) {
+						/* not first time, but different count, so free */
+						free(sw->x);
+						free(sw->y);
+						free(sw->z);
+						free(sw->flag);
+						free(sw->t);
+					}
+					sw->x = (double*)calloc(packet.total_particle_count,
+						sizeof(double));
+					sw->y = (double*)calloc(packet.total_particle_count,
+						sizeof(double));
+					sw->z = (double*)calloc(packet.total_particle_count,
+						sizeof(double));
+					sw->particle_type = (short*)calloc(packet.total_particle_count,
+						sizeof(short));
+					sw->t = (float*)calloc(packet.total_particle_count,
+						sizeof(float));
+					for(particle = 0; particle < packet.total_particle_count;particle++) {
+						sw->x[particle] = UNDEFINED_PARTICLE;
+					}
+					sw->rotation_center[0] = UNDEFINED_PARTICLE;
+					memcpy(sw->world_origin, packet.world_origin, sizeof(packet.world_origin));
+					memcpy(sw->world_size, packet.world_size, sizeof(packet.world_size));
+					sw->model_id = packet.model_id;
+				}
 
-                    /* loop through particles in this packet */
-                    for(; particle < packet.particle_count; particle++) {
-                        /* get particle id */
-                        unsigned int id = packet.data[particle].id;
-                        /* set x, y, z and w */
-                        sw->t[id] = packet.t;
-                        sw->x[id] = packet.data[particle].position[0];
-                        sw->y[id] = packet.data[particle].position[1];
-                        sw->z[id] = packet.data[particle].position[2];
-                        sw->particle_type[id] = packet.data[particle].particle_type;
-                        /*sw->w[id] = packet.data[particle].position[2];*/
-                        /*sw->flag[id] = packet.data[particle].flag;*/
-                    }
-                    if(sw->rotation_center[0] == UNDEFINED_PARTICLE) {
-                    	sw->rotation_center[0] = sw->world_origin[0] + sw->world_size[0] / 2.0;
-                    	sw->rotation_center[1] = sw->world_origin[2] + sw->world_size[2] / 2.0;
-                    	sw->rotation_center[2] = sw->world_origin[1] + sw->world_size[1] / 2.0;
-                    }
-                    sw->udp_buffer_size = sw->total_particle_count * sizeof(ptp_packet_t);
-                    /*
-    	            if (setsockopt(sw->data_socket_fd, SOL_SOCKET, SO_RCVBUF,
-                        &sw->udp_buffer_size,
-    			        (socklen_t)(sizeof(int))) == -1) {
-    		            perror("setsockopt(SO_RCVBUF)");
-                        printf("Unable to allocated %i bytes\n",
-                            sw->udp_buffer_size);
-                    }
-                    */
-#ifdef XXX
-                    if(new_model_received) {
-                        /* set camera based on new world */
-                        GLfloat eye[3];
-                        GLfloat target[3];
-                        eye[0] = g_seewaves.world_origin[0] + (g_seewaves.world_size[0] / 2);
-                        eye[1] = g_seewaves.world_origin[2] + (g_seewaves.world_size[2] / 2);
-                        eye[2] = g_seewaves.world_origin[1] + (g_seewaves.world_size[1] / 2);
-                        target[0] = g_seewaves.world_origin[0] + (g_seewaves.world_size[0] / 2);
-                        target[1] = g_seewaves.world_origin[2] + (g_seewaves.world_size[2] / 2);
-                        target[2] = g_seewaves.world_origin[1] + (g_seewaves.world_size[1] / 2);
-                        camera_set_raw(eye[0], eye[1], eye[2], 0.0, 1.0, 0.0, target[0], target[1], target[2]);
+				/* save total number of particles in model */
+				sw->total_particle_count = packet.total_particle_count;
 
-                    	new_model_received = 0;
-                    }
-#endif
-                    /* Release the lock */
-                    if ((err = pthread_mutex_unlock(&sw->lock))) {
-                        fprintf(stderr, "Error creating mutex: %i\n", err);
-                    }
-                } else {
-                    if(err == EBUSY) {
-                        /* mutex was locked */
-                        printf("!LOCK\n");
-                        fflush(stdout);
-                    } else if(err == EINVAL) {
-                        fprintf(stderr, "Invalid mutex lock?");
-                    } else {
-                        fprintf(stderr, "Unhandled mutex lock error: %i", err);
-                    }
-                }
+				/* loop through particles in this packet */
+				for(; particle < packet.particle_count; particle++) {
+					/* get particle id */
+					unsigned int id = packet.data[particle].id;
+					/* set x, y, z and w */
+					sw->t[id] = packet.t;
+					sw->x[id] = packet.data[particle].position[0];
+					sw->y[id] = packet.data[particle].position[1];
+					sw->z[id] = packet.data[particle].position[2];
+					sw->particle_type[id] = packet.data[particle].particle_type;
+					/*sw->w[id] = packet.data[particle].position[2];*/
+					/*sw->flag[id] = packet.data[particle].flag;*/
+				}
+				if(sw->rotation_center[0] == UNDEFINED_PARTICLE) {
+					sw->rotation_center[0] = sw->world_origin[0] + sw->world_size[0] / 2.0;
+					sw->rotation_center[1] = sw->world_origin[2] + sw->world_size[2] / 2.0;
+					sw->rotation_center[2] = sw->world_origin[1] + sw->world_size[1] / 2.0;
+				}
+				sw->udp_buffer_size = sw->total_particle_count * sizeof(ptp_packet_t);
+
+				/* Release the lock */
+				if ((err = pthread_mutex_unlock(&sw->lock))) {
+					fprintf(stderr, "Error unlocking mutex: %i\n", err);
+				}
             }
         } else if (packet_length_bytes == 0) {
             /* socket closed on linux */
@@ -273,7 +265,6 @@ void *data_thread_main(void *user_data) {
                 done = 1;
             }
         }
-        //usleep(10);
     }
     if(sw->verbosity) {
         printf("Data thread exiting\n");

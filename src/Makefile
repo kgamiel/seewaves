@@ -15,7 +15,7 @@ ifeq ($(platform), Linux)
 else ifeq ($(platform), Darwin)
 	INC=-I/usr/local/include
 	CFLAGS=-Wall -Wextra -std=c99 -pedantic -Wmissing-prototypes \
-	-Wstrict-prototypes -Wold-style-definition -O3 #-g
+	-Wstrict-prototypes -Wold-style-definition -O3 -Wno-deprecated-declarations #-g
 	LIBS=-L/usr/local/lib -lglfw -framework OpenGL -framework GLUT \
 	-framework Foundation -framework Cocoa -framework IOKit
 endif
