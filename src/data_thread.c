@@ -147,7 +147,7 @@ void *data_thread_main(void *user_data) {
 									   0, (struct sockaddr *)
 									   &data_socket_remote_address,
 									   &data_socket_remote_address_len);
-			if (packet_length_bytes < sizeof(ptp_packet_t)) {
+			if ((size_t)packet_length_bytes < sizeof(ptp_packet_t)) {
 				fprintf(stderr, "Error, expected %ld bytes, got %ld\n",
 						sizeof(ptp_packet_t),
 						packet_length_bytes);
@@ -187,6 +187,7 @@ void *data_thread_main(void *user_data) {
 
 				/* allocate memory if first time or new model */
 				if (sw->model_id != packet.model_id) {
+
 					if (sw->x != NULL) {
 						/* not first time, but different count, so free */
 						free(sw->x);

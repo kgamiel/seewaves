@@ -467,9 +467,9 @@ int initialize_application(seewaves_t *s, int argc, char **argv) {
     s->background_color[3] = 0.0f;
 
     g_seewaves.view_options |= 1 << HEADS_UP;
-    g_seewaves.view_options |= 1 << AXES;
-    g_seewaves.view_options |= 1 << GRID;
-    g_seewaves.view_options |= 1 << ROTATION_AXES;
+    //g_seewaves.view_options |= 1 << AXES;
+    //g_seewaves.view_options |= 1 << GRID;
+    //g_seewaves.view_options |= 1 << ROTATION_AXES;
 
     /* process command-line arguments */
     while ((opt = getopt_long(argc, argv, "h:p:t:r:u:v:", long_options,
@@ -1258,6 +1258,7 @@ void GLFWCALL on_char(int key, int action) {
 }
 
 void physics_update(long usec) {
+    (void)usec;
 }
 
 /*
@@ -1362,7 +1363,7 @@ int main(int argc, char **argv) {
         }
 
         /* give the CPU a break */
-        //usleep(10);
+        usleep(20);
     }
 
     /* close the underlying sockets, results in threads exiting gracefully */
